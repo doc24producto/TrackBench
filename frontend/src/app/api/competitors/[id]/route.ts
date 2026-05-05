@@ -9,7 +9,8 @@ export async function DELETE(req: NextRequest, { params }: { params: { id: strin
   const { data: comp } = await supabase.from('competitors')
     .select('id, product:products(userId)').eq('id', params.id).single();
 
-  if (!comp || (comp.product as { userId: string } | null)?.userId !== user.id) {
+  const product = comp?.product as unknown as { userId: string } | null;
+  if (!comp || product?.userId !== user.id) {
     return NextResponse.json({ error: 'No encontrado' }, { status: 404 });
   }
 
