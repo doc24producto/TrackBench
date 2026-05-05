@@ -4,7 +4,7 @@ import { supabase } from '@/lib/supabase';
 export async function GET() {
   const checks: Record<string, { ok: boolean; detail?: string }> = {};
 
-  // Check env vars
+  // Env vars
   checks.env = {
     ok: !!process.env.SUPABASE_URL && !!process.env.SUPABASE_SERVICE_ROLE_KEY && !!process.env.JWT_SECRET,
     detail: [
@@ -15,45 +15,65 @@ export async function GET() {
     ].join(' | '),
   };
 
-  // Check real query on products (the one that actually fails)
-  const { data: productsTest, error: productsError } = await supabase
+  // Exact GET /api/products query (no user filter — just to test columns + order)
+  const { error: q1 } = await supabase
     .from('products')
     .select('*, competitors(id, name, currentPrice, currency)')
+    .order('createdAt', { ascending: false })
     .limit(1);
-
-  checks['query:products+competitors'] = {
-    ok: !productsError,
-    detail: productsError ? `${productsError.code}: ${productsError.message}` : `ok (${productsTest?.length ?? 0} rows)`,
+  checks['query:products_with_order'] = {
+    ok: !q1,
+    detail: q1 ? `${q1.code}: ${q1.message}` : 'ok',
   };
 
-  // Check column names on products table
-  const { data: cols, error: colsError } = await supabase
-    .rpc('get_columns', { table_name: 'products' })
-    .limit(30);
-
-  if (colsError) {
-    // rpc doesn't exist, try information_schema directly
-    const { data: schema } = await supabase
-      .from('products')
-      .select('*')
-      .limit(0);
-    checks['columns:products'] = {
-      ok: true,
-      detail: schema !== null ? 'query ok (check nested query error above for column issues)' : 'could not read',
-    };
-  } else {
-    checks['columns:products'] = { ok: true, detail: JSON.stringify(cols) };
-  }
-
-  // Check real query on users
-  const { error: usersError } = await supabase
-    .from('users')
-    .select('id, email, subscriptionTier')
+  // Test eq on userId column specifically
+  const { error: q2 } = await supabase
+    .from('products')
+    .select('id')
+    .eq('userId', '00000000-0000-0000-0000-000000000000')
     .limit(1);
+  checks['query:products_eq_userId'] = {
+    ok: !q2,
+    detail: q2 ? `${q2.code}: ${q2.message}` : 'ok (column exists)',
+  };
 
-  checks['query:users'] = {
-    ok: !usersError,
-    detail: usersError ? `${usersError.code}: ${usersError.message}` : 'ok',
+  // Test order on competitors
+  const { error: q3 } = await supabase
+    .from('competitors')
+    .select('id, name, currentPrice, currency')
+    .limit(1);
+  checks['query:competitors_columns'] = {
+    ok: !q3,
+    detail: q3 ? `${q3.code}: ${q3.message}` : 'ok',
+  };
+
+  // Test dashboard summary query
+  const { error: q4 } = await supabase
+    .from('price_alerts')
+    .select('*', { count: 'exact', head: true })
+    .eq('userId', '00000000-0000-0000-0000-000000000000')
+    .gte('createdAt', new Date().toISOString());
+  checks['query:price_alerts_createdAt'] = {
+    ok: !q4,
+    detail: q4 ? `${q4.code}: ${q4.message}` : 'ok',
+  };
+
+  // Column names via information_schema
+  const { data: colData, error: colErr } = await supabase
+    .rpc('version'); // just to test RPC works
+  void colData; void colErr;
+
+  // Direct column list
+  const { data: productRow } = await supabase.from('products').select('*').limit(1);
+  checks['columns:products'] = {
+    ok: true,
+    detail: productRow?.[0] ? Object.keys(productRow[0]).join(', ') : 'no rows — cannot inspect columns',
+  };
+
+  const { data: compRow } = await supabase.from('competitors').select('*').limit(1);
+  checks['columns:competitors'] = {
+    ok: true,
+    detail: compRow?.[0] ? Object.keys(compRow[0]).join(', ') : 'no rows — cannot inspect columns',
   };
 
   const allOk = Object.values(checks).every((c) => c.ok);

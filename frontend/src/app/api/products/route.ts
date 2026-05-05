@@ -8,25 +8,30 @@ const TIER_LIMITS: Record<string, number> = {
 };
 
 export async function GET(req: NextRequest) {
-  const user = getUser(req);
-  if (!user) return NextResponse.json({ error: 'No autorizado' }, { status: 401 });
+  try {
+    const user = getUser(req);
+    if (!user) return NextResponse.json({ error: 'No autorizado' }, { status: 401 });
 
-  const { data: products, error } = await supabase.from('products')
-    .select('*, competitors(id, name, currentPrice, currency)')
-    .eq('userId', user.id)
-    .order('createdAt', { ascending: false });
+    const { data: products, error } = await supabase.from('products')
+      .select('*, competitors(id, name, currentPrice, currency)')
+      .eq('userId', user.id)
+      .order('createdAt', { ascending: false });
 
-  if (error) {
-    console.error('[GET /api/products] Supabase error:', error);
-    return NextResponse.json({ error: 'Error al obtener productos', detail: error.message }, { status: 500 });
+    if (error) {
+      console.error('[GET /api/products] Supabase error:', error);
+      return NextResponse.json({ error: 'Error al obtener productos', detail: error.message, code: error.code }, { status: 500 });
+    }
+
+    const withCount = (products || []).map((p) => ({
+      ...p,
+      _count: { competitors: p.competitors?.length ?? 0 },
+    }));
+
+    return NextResponse.json(withCount);
+  } catch (e) {
+    console.error('[GET /api/products] Unhandled exception:', e);
+    return NextResponse.json({ error: 'Error interno', detail: String(e) }, { status: 500 });
   }
-
-  const withCount = (products || []).map((p) => ({
-    ...p,
-    _count: { competitors: p.competitors?.length ?? 0 },
-  }));
-
-  return NextResponse.json(withCount);
 }
 
 export async function POST(req: NextRequest) {
