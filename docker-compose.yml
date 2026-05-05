@@ -1,0 +1,30 @@
+# docker-compose.yml — solo para desarrollo local
+# En producción usamos Supabase (DB) + Railway (backend) + Vercel (frontend)
+#
+# Para correr localmente sin Supabase, podés usar esto:
+#   docker compose up postgres -d
+# Y en backend/.env poner:
+#   DATABASE_URL=postgresql://competitortrack:competitortrack_pass@localhost:5432/competitortrack_db
+#   DIRECT_URL=postgresql://competitortrack:competitortrack_pass@localhost:5432/competitortrack_db
+
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: competitortrack
+      POSTGRES_PASSWORD: competitortrack_pass
+      POSTGRES_DB: competitortrack_db
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U competitortrack']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
