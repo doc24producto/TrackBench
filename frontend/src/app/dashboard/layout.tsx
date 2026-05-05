@@ -6,12 +6,13 @@ import { useAuthStore } from '@/store/authStore';
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
-  const { accessToken } = useAuthStore();
+  const { accessToken, _hasHydrated } = useAuthStore();
 
   useEffect(() => {
-    if (!accessToken) router.push('/login');
-  }, [accessToken, router]);
+    if (_hasHydrated && !accessToken) router.push('/login');
+  }, [accessToken, _hasHydrated, router]);
 
+  if (!_hasHydrated) return null;
   if (!accessToken) return null;
 
   return (
