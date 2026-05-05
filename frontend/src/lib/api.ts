@@ -2,7 +2,7 @@ import axios from 'axios';
 import { useAuthStore } from '@/store/authStore';
 
 const api = axios.create({
-  baseURL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000',
+  baseURL: '',
   headers: { 'Content-Type': 'application/json' },
 });
 
@@ -20,10 +20,7 @@ api.interceptors.response.use(
       original._retry = true;
       try {
         const refreshToken = useAuthStore.getState().refreshToken;
-        const { data } = await axios.post(
-          `${process.env.NEXT_PUBLIC_API_URL}/api/auth/refresh-token`,
-          { refreshToken }
-        );
+        const { data } = await axios.post('/api/auth/refresh-token', { refreshToken });
         useAuthStore.getState().setTokens(data.accessToken, data.refreshToken);
         original.headers.Authorization = `Bearer ${data.accessToken}`;
         return api(original);
