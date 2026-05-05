@@ -86,61 +86,124 @@ export function getBrandName(url: string): string {
 
 // ─── MercadoLibre ──────────────────────────────────────────────────────────────
 
+function detectMLSite(url: string): string {
+  if (url.includes('.com.ar')) return 'MLA';
+  if (url.includes('.com.br')) return 'MLB';
+  if (url.includes('.com.mx')) return 'MLM';
+  if (url.includes('.com.co')) return 'MLCO';
+  if (url.includes('.com.cl')) return 'MLC';
+  if (url.includes('.com.uy')) return 'MLU';
+  return 'MLA';
+}
+
 function extractMercadoLibreId(url: string): string | null {
-  const match = url.match(/ML[A-Z]-?(\d+)/i);
+  // Formato directo: MLA1234567890 o MLA-1234567890
+  const match = url.match(/(MLA|MLB|MLM|MLC|MLU|MLCO)-?(\d{6,12})/i);
   if (!match) return null;
-  const countryCode = url.match(/(MLA|MLB|MLM|MLC|MLU|MLCO)/i)?.[1]?.toUpperCase();
-  return countryCode ? `${countryCode}${match[1]}` : null;
+  return `${match[1].toUpperCase()}${match[2]}`;
+}
+
+async function fetchMLItem(itemId: string): Promise<ScrapeResult> {
+  const { data } = await axios.get(
+    `https://api.mercadolibre.com/items/${itemId}`,
+    { timeout: 6000 }
+  );
+  return {
+    success: true,
+    data: {
+      name: data.title,
+      price: data.price ?? null,
+      currency: data.currency_id ?? 'ARS',
+      imageUrl: data.thumbnail?.replace('http://', 'https://') ?? null,
+      sku: data.id ?? null,
+    },
+  };
 }
 
 async function scrapeMercadoLibre(url: string): Promise<ScrapeResult> {
-  // ── Catalog URL: /p/MLAxxx ─────────────────────────────────────────────────
-  const catalogMatch = url.match(/\/p\/(ML[A-Z]\d+)/i);
+  const site = detectMLSite(url);
+
+  // ── 1. Catalog URL: /p/MLAxxx ──────────────────────────────────────────────
+  const catalogMatch = url.match(/\/p\/(ML[A-Z]{1,2}\d+)/i);
   if (catalogMatch) {
     const catalogId = catalogMatch[1].toUpperCase();
     try {
-      // Try products API (catalog)
       const { data } = await axios.get(
         `https://api.mercadolibre.com/products/${catalogId}`,
         { timeout: 6000 }
       );
-      const price = data.buy_box_winner?.price ?? null;
-      const currency = data.buy_box_winner?.currency_id ?? 'ARS';
-      const imageUrl = data.pictures?.[0]?.url?.replace('http://', 'https://') ?? null;
-      return {
-        success: true,
-        data: { name: data.name, price, currency, imageUrl, sku: catalogId },
-      };
-    } catch {
-      // Fall through to item ID extraction below
+      // Catalog API → get buy box winner price
+      if (data.name) {
+        return {
+          success: true,
+          data: {
+            name: data.name,
+            price: data.buy_box_winner?.price ?? null,
+            currency: data.buy_box_winner?.currency_id ?? 'ARS',
+            imageUrl: data.pictures?.[0]?.url?.replace('http://', 'https://') ?? null,
+            sku: catalogId,
+          },
+        };
+      }
+    } catch { /* fall through */ }
+    // If catalog API fails, try item ID in the URL anyway
+  }
+
+  // ── 2. Item URL: MLA-123456 or MLA123456 anywhere in URL ───────────────────
+  const itemId = extractMercadoLibreId(url);
+  if (itemId) {
+    try {
+      return await fetchMLItem(itemId);
+    } catch (e: unknown) {
+      const status = (e as { response?: { status?: number } }).response?.status;
+      if (status === 404) {
+        return { success: false, error: 'Producto no encontrado en MercadoLibre.' };
+      }
+      // If items fails, fall through to search
     }
   }
 
-  // ── Item URL ───────────────────────────────────────────────────────────────
-  const itemId = extractMercadoLibreId(url);
-  if (!itemId) {
-    return { success: false, error: 'No se pudo extraer el ID del producto de MercadoLibre. Verificá que la URL sea de un producto específico.' };
-  }
-
+  // ── 3. Search/listado URL or any ML URL without explicit item ID ────────────
+  // Extract search term from URL path and use ML search API
   try {
-    const { data } = await axios.get(
-      `https://api.mercadolibre.com/items/${itemId}`,
+    const parsed = new URL(url);
+    // Get the relevant path segment (last non-empty segment, strip anchor/query)
+    const pathSegments = parsed.pathname.split('/').filter(Boolean);
+    const rawTerm = pathSegments[pathSegments.length - 1] || pathSegments[0] || '';
+    const searchTerm = rawTerm.replace(/-/g, ' ').replace(/_/g, ' ').trim();
+
+    if (!searchTerm) {
+      return { success: false, error: 'No se pudo identificar el producto. Pegá la URL de un producto específico.' };
+    }
+
+    const { data: searchData } = await axios.get(
+      `https://api.mercadolibre.com/sites/${site}/search?q=${encodeURIComponent(searchTerm)}&limit=1`,
       { timeout: 6000 }
     );
-    return {
-      success: true,
-      data: {
-        name: data.title,
-        price: data.price ?? null,
-        currency: data.currency_id ?? 'ARS',
-        imageUrl: data.thumbnail?.replace('http://', 'https://') ?? null,
-        sku: data.id ?? null,
-      },
-    };
-  } catch (e: unknown) {
-    const status = (e as { response?: { status?: number } }).response?.status;
-    if (status === 404) return { success: false, error: 'Producto no encontrado en MercadoLibre. Verificá que la URL sea válida.' };
-    return { success: false, error: 'No se pudo conectar con MercadoLibre. Intentá de nuevo en un momento.' };
+
+    const first = searchData?.results?.[0];
+    if (!first) {
+      return { success: false, error: `No se encontraron productos para "${searchTerm}" en MercadoLibre.` };
+    }
+
+    // Got a search result — fetch full item detail for better data
+    try {
+      return await fetchMLItem(first.id);
+    } catch {
+      // Use search result data directly
+      return {
+        success: true,
+        data: {
+          name: first.title,
+          price: first.price ?? null,
+          currency: first.currency_id ?? 'ARS',
+          imageUrl: first.thumbnail?.replace('http://', 'https://') ?? null,
+          sku: first.id ?? null,
+        },
+      };
+    }
+  } catch {
+    return { success: false, error: 'No se pudo conectar con MercadoLibre. Intentá de nuevo.' };
   }
 }
 
