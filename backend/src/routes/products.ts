@@ -44,7 +44,7 @@ router.get(
 router.post(
   '/',
   [body('url').isURL()],
-  asyncHandler(async (req: AuthRequest, res: Response) => {
+  asyncHandler(async (req: AuthRequest, res: Response): Promise<void> => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) throw createError('URL inválida', 400);
 
@@ -78,14 +78,16 @@ router.post(
           data: { productId: product.id, price: parseFloat(manualPrice), currency: manualCurrency || 'ARS' },
         });
       }
-      return res.status(201).json(product);
+      res.status(201).json(product);
+      return;
     }
 
     // Si no hay datos manuales, intentamos scraping
     const scraped = await scrapeProduct(url);
     if (!scraped.success || !scraped.data) {
       // Devolvemos 200 con scraped=false para que el frontend muestre formulario manual
-      return res.status(200).json({ scraped: false, url, error: scraped.error || 'No se pudo leer el producto automáticamente' });
+      res.status(200).json({ scraped: false, url, error: scraped.error || 'No se pudo leer el producto automáticamente' });
+      return;
     }
 
     const product = await prisma.product.create({
