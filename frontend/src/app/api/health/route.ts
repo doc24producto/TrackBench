@@ -15,15 +15,46 @@ export async function GET() {
     ].join(' | '),
   };
 
-  // Check Supabase connection + tables
-  const tables = ['users', 'products', 'competitors', 'price_history', 'price_alerts', 'alert_settings'];
-  for (const table of tables) {
-    const { error } = await supabase.from(table).select('id').limit(1);
-    checks[`table:${table}`] = {
-      ok: !error,
-      detail: error ? `${error.code}: ${error.message}` : 'exists',
+  // Check real query on products (the one that actually fails)
+  const { data: productsTest, error: productsError } = await supabase
+    .from('products')
+    .select('*, competitors(id, name, currentPrice, currency)')
+    .limit(1);
+
+  checks['query:products+competitors'] = {
+    ok: !productsError,
+    detail: productsError ? `${productsError.code}: ${productsError.message}` : `ok (${productsTest?.length ?? 0} rows)`,
+  };
+
+  // Check column names on products table
+  const { data: cols, error: colsError } = await supabase
+    .rpc('get_columns', { table_name: 'products' })
+    .limit(30);
+
+  if (colsError) {
+    // rpc doesn't exist, try information_schema directly
+    const { data: schema } = await supabase
+      .from('products')
+      .select('*')
+      .limit(0);
+    checks['columns:products'] = {
+      ok: true,
+      detail: schema !== null ? 'query ok (check nested query error above for column issues)' : 'could not read',
     };
+  } else {
+    checks['columns:products'] = { ok: true, detail: JSON.stringify(cols) };
   }
+
+  // Check real query on users
+  const { error: usersError } = await supabase
+    .from('users')
+    .select('id, email, subscriptionTier')
+    .limit(1);
+
+  checks['query:users'] = {
+    ok: !usersError,
+    detail: usersError ? `${usersError.code}: ${usersError.message}` : 'ok',
+  };
 
   const allOk = Object.values(checks).every((c) => c.ok);
   return NextResponse.json({ ok: allOk, checks }, { status: allOk ? 200 : 500 });
