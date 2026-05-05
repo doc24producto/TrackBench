@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Badge } from '@/components/ui/Badge';
 import { useAuthStore } from '@/store/authStore';
+import { SubscriptionTier } from '@/types';
 import api from '@/lib/api';
 
 const TIER_LIMITS: Record<string, number> = {
@@ -68,7 +69,7 @@ export default function SettingsPage() {
       const { data } = await api.post('/api/subscription/upgrade', { tier });
       // Update store with new tokens so subscriptionTier takes effect immediately
       if (data.accessToken && user) {
-        setAuth({ ...user, subscriptionTier: tier }, data.accessToken, data.refreshToken);
+        setAuth({ ...user, subscriptionTier: tier as SubscriptionTier }, data.accessToken, data.refreshToken);
       }
       queryClient.invalidateQueries({ queryKey: ['subscription'] });
       queryClient.invalidateQueries({ queryKey: ['products'] });
