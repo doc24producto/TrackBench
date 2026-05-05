@@ -60,6 +60,8 @@ export default function ProductsPage() {
     try {
       const { data } = await api.post('/api/products', { url });
       if (data.scraped === false) {
+        // Mostrar el error específico antes de ir al manual
+        if (data.error) setError(data.error);
         setStep('manual');
       } else {
         queryClient.invalidateQueries({ queryKey: ['products'] });
@@ -203,9 +205,14 @@ export default function ProductsPage() {
           <form onSubmit={handleManualSubmit} className="space-y-4">
             <div className="flex items-start gap-2 bg-yellow-50 border border-yellow-200 rounded-lg p-3">
               <AlertCircle size={16} className="text-yellow-600 mt-0.5 flex-shrink-0" />
-              <p className="text-sm text-yellow-700">
-                No pudimos leer los datos automáticamente. Ingresalos a mano — igual guardamos la URL para monitorear cambios.
-              </p>
+              <div className="text-sm text-yellow-700">
+                <p className="font-medium mb-0.5">No pudimos leer los datos automáticamente.</p>
+                {error ? (
+                  <p className="text-yellow-600">{error}</p>
+                ) : (
+                  <p>Ingresalos a mano — igual guardamos la URL para monitorear cambios de precio.</p>
+                )}
+              </div>
             </div>
 
             <div className="text-xs text-gray-500 bg-gray-50 rounded p-2 truncate">{url}</div>
