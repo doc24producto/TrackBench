@@ -83,9 +83,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(product, { status: 201 });
   }
 
-  const scraped = await scrapeProduct(url);
-  if (!scraped.success || !scraped.data) {
-    return NextResponse.json({ scraped: false, url, error: scraped.error }, { status: 200 });
+  // Race entre scraper y timeout de 8s (Vercel free = 10s max)
+  const scraped = await Promise.race([
+    scrapeProduct(url),
+    new Promise<{ success: false; error: string }>((resolve) =>
+      setTimeout(() => resolve({ success: false, error: 'El sitio tardó demasiado en responder. Ingresá los datos manualmente.' }), 8000)
+    ),
+  ]);
+  if (!scraped.success || !('data' in scraped) || !scraped.data) {
+    return NextResponse.json({ scraped: false, url, error: (scraped as { error?: string }).error }, { status: 200 });
   }
 
   const { data: product, error } = await supabase.from('products').insert({

@@ -102,7 +102,7 @@ async function scrapeMercadoLibre(url: string): Promise<ScrapeResult> {
       // Try products API (catalog)
       const { data } = await axios.get(
         `https://api.mercadolibre.com/products/${catalogId}`,
-        { timeout: 8000 }
+        { timeout: 6000 }
       );
       const price = data.buy_box_winner?.price ?? null;
       const currency = data.buy_box_winner?.currency_id ?? 'ARS';
@@ -125,7 +125,7 @@ async function scrapeMercadoLibre(url: string): Promise<ScrapeResult> {
   try {
     const { data } = await axios.get(
       `https://api.mercadolibre.com/items/${itemId}`,
-      { timeout: 8000 }
+      { timeout: 6000 }
     );
     return {
       success: true,
@@ -148,7 +148,7 @@ async function scrapeMercadoLibre(url: string): Promise<ScrapeResult> {
 
 async function scrapeAmazon(url: string): Promise<ScrapeResult> {
   try {
-    const res = await axios.get(url, { headers: HEADERS, timeout: 10000 });
+    const res = await axios.get(url, { headers: HEADERS, timeout: 6000 });
     const $ = cheerio.load(res.data);
     const name = $('#productTitle').text().trim();
     if (!name) return { success: false, error: 'Amazon bloqueó la solicitud. Ingresá los datos manualmente.' };
@@ -196,7 +196,7 @@ async function scrapeGeneric(url: string): Promise<ScrapeResult> {
   try {
     const res = await axios.get(url, {
       headers: HEADERS,
-      timeout: 12000,
+      timeout: 7000,
       maxRedirects: 5,
       responseType: 'text',
       validateStatus: (s) => s < 400, // no lanzar en 3xx
