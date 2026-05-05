@@ -194,8 +194,19 @@ function parsePrice(text: string): number | null {
 async function scrapeGeneric(url: string): Promise<ScrapeResult> {
   let html: string;
   try {
-    const res = await axios.get(url, { headers: HEADERS, timeout: 12000 });
-    html = res.data;
+    const res = await axios.get(url, {
+      headers: HEADERS,
+      timeout: 12000,
+      maxRedirects: 5,
+      responseType: 'text',
+      validateStatus: (s) => s < 400, // no lanzar en 3xx
+    });
+    // Si no es HTML, no podemos parsear
+    const contentType = res.headers['content-type'] ?? '';
+    if (!contentType.includes('text/html') && !contentType.includes('application/xhtml')) {
+      return { success: false, error: 'El sitio no devolvió una página HTML parseable.' };
+    }
+    html = typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
   } catch (e: unknown) {
     const status = (e as { response?: { status?: number } }).response?.status;
     if (status === 403 || status === 401) {

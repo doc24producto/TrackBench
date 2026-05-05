@@ -35,6 +35,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  try {
   const user = getUser(req);
   if (!user) return NextResponse.json({ error: 'No autorizado' }, { status: 401 });
 
@@ -110,4 +111,9 @@ export async function POST(req: NextRequest) {
   }
 
   return NextResponse.json(product, { status: 201 });
+  } catch (e) {
+    console.error('[POST /api/products] Unhandled exception:', e);
+    // Never let scraper exceptions become 500 — fall back to manual entry
+    return NextResponse.json({ scraped: false, url: '', error: 'Error interno al procesar la URL. Ingresá los datos manualmente.' }, { status: 200 });
+  }
 }
