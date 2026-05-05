@@ -122,17 +122,22 @@ async function fetchMLItem(itemId: string): Promise<ScrapeResult> {
 
 async function scrapeMercadoLibre(url: string): Promise<ScrapeResult> {
   const site = detectMLSite(url);
+  const parsed = new URL(url);
 
-  // ── 1. Catalog URL: /p/MLAxxx ──────────────────────────────────────────────
-  const catalogMatch = url.match(/\/p\/(ML[A-Z]{1,2}\d+)/i);
+  // ── 1. Extraer item ID del fragment: wid=MLA3240312026 ────────────────────
+  // URLs tipo: /up/MLAU...#...&wid=MLA123&...  (links desde search results)
+  const hashParams = new URLSearchParams(parsed.hash.replace('#', ''));
+  const widId = hashParams.get('wid');
+  if (widId && /^ML[A-Z]{1,2}\d+$/i.test(widId)) {
+    try { return await fetchMLItem(widId.toUpperCase()); } catch { /* fall through */ }
+  }
+
+  // ── 2. Catalog URL: /p/MLAxxx ─────────────────────────────────────────────
+  const catalogMatch = parsed.pathname.match(/\/p\/(ML[A-Z]{1,2}\d+)/i);
   if (catalogMatch) {
     const catalogId = catalogMatch[1].toUpperCase();
     try {
-      const { data } = await axios.get(
-        `https://api.mercadolibre.com/products/${catalogId}`,
-        { timeout: 6000 }
-      );
-      // Catalog API → get buy box winner price
+      const { data } = await axios.get(`https://api.mercadolibre.com/products/${catalogId}`, { timeout: 6000 });
       if (data.name) {
         return {
           success: true,
@@ -146,51 +151,61 @@ async function scrapeMercadoLibre(url: string): Promise<ScrapeResult> {
         };
       }
     } catch { /* fall through */ }
-    // If catalog API fails, try item ID in the URL anyway
   }
 
-  // ── 2. Item URL: MLA-123456 or MLA123456 anywhere in URL ───────────────────
+  // ── 3. Universal Product URL: /up/MLAU... ─────────────────────────────────
+  const upMatch = parsed.pathname.match(/\/up\/(ML[A-Z]{1,3}\d+)/i);
+  if (upMatch) {
+    const upId = upMatch[1].toUpperCase();
+    try {
+      const { data } = await axios.get(`https://api.mercadolibre.com/products/${upId}`, { timeout: 6000 });
+      if (data.name) {
+        return {
+          success: true,
+          data: {
+            name: data.name,
+            price: data.buy_box_winner?.price ?? null,
+            currency: data.buy_box_winner?.currency_id ?? 'ARS',
+            imageUrl: data.pictures?.[0]?.url?.replace('http://', 'https://') ?? null,
+            sku: upId,
+          },
+        };
+      }
+    } catch { /* fall through */ }
+  }
+
+  // ── 4. Item ID directo en la URL: MLA123456 o MLA-123456 ──────────────────
   const itemId = extractMercadoLibreId(url);
   if (itemId) {
     try {
       return await fetchMLItem(itemId);
     } catch (e: unknown) {
       const status = (e as { response?: { status?: number } }).response?.status;
-      if (status === 404) {
-        return { success: false, error: 'Producto no encontrado en MercadoLibre.' };
-      }
-      // If items fails, fall through to search
+      if (status !== 404) { /* fall through to search */ }
+      else return { success: false, error: 'Producto no encontrado en MercadoLibre.' };
     }
   }
 
-  // ── 3. Search/listado URL or any ML URL without explicit item ID ────────────
-  // Extract search term from URL path and use ML search API
+  // ── 5. Fallback: buscar por nombre en ML search API ───────────────────────
   try {
-    const parsed = new URL(url);
-    // Get the relevant path segment (last non-empty segment, strip anchor/query)
     const pathSegments = parsed.pathname.split('/').filter(Boolean);
-    const rawTerm = pathSegments[pathSegments.length - 1] || pathSegments[0] || '';
-    const searchTerm = rawTerm.replace(/-/g, ' ').replace(/_/g, ' ').trim();
+    // Ignorar segmentos que sean IDs o palabras clave de navegación
+    const ignoredSegments = new Set(['up', 'p', 'jm', 'noindex', 'listado']);
+    const nameSeg = pathSegments.find(s => s.length > 5 && !ignoredSegments.has(s.toLowerCase()) && !/^ML/i.test(s));
+    const searchTerm = (nameSeg || pathSegments[0] || '').replace(/-/g, ' ').trim();
 
     if (!searchTerm) {
-      return { success: false, error: 'No se pudo identificar el producto. Pegá la URL de un producto específico.' };
+      return { success: false, error: 'No se pudo identificar el producto en esta URL de MercadoLibre.' };
     }
 
     const { data: searchData } = await axios.get(
       `https://api.mercadolibre.com/sites/${site}/search?q=${encodeURIComponent(searchTerm)}&limit=1`,
       { timeout: 6000 }
     );
-
     const first = searchData?.results?.[0];
-    if (!first) {
-      return { success: false, error: `No se encontraron productos para "${searchTerm}" en MercadoLibre.` };
-    }
+    if (!first) return { success: false, error: 'No se encontraron resultados en MercadoLibre.' };
 
-    // Got a search result — fetch full item detail for better data
-    try {
-      return await fetchMLItem(first.id);
-    } catch {
-      // Use search result data directly
+    try { return await fetchMLItem(first.id); } catch {
       return {
         success: true,
         data: {
