@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
 import { getUser } from '@/lib/auth';
-import { scrapeProduct, detectMarketplace, detectCountry } from '@/lib/scraper';
+import { scrapeProduct, detectMarketplace, detectCountry, getBrandName, validateUrl } from '@/lib/scraper';
 
 const TIER_LIMITS: Record<string, number> = {
   FREE: 3, STARTER: 10, GROWTH: 25, PRO: 100,
@@ -30,6 +30,8 @@ export async function POST(req: NextRequest) {
 
   const { url, name: manualName, price: manualPrice, currency: manualCurrency } = await req.json();
   if (!url) return NextResponse.json({ error: 'URL requerida' }, { status: 400 });
+  const security = validateUrl(url);
+  if (!security.valid) return NextResponse.json({ error: security.error }, { status: 400 });
 
   const { count } = await supabase.from('products').select('*', { count: 'exact', head: true }).eq('userId', user.id);
   const limit = TIER_LIMITS[user.subscriptionTier] ?? 3;
@@ -39,10 +41,11 @@ export async function POST(req: NextRequest) {
 
   const marketplace = detectMarketplace(url);
   const country = detectCountry(url);
+  const brandName = getBrandName(url);
 
   if (manualName) {
     const { data: product, error } = await supabase.from('products').insert({
-      userId: user.id, name: manualName, url, marketplace, country,
+      userId: user.id, name: manualName, url, marketplace: brandName, country,
       currentPrice: manualPrice ? parseFloat(manualPrice) : null,
       currency: manualCurrency || 'ARS',
       lastScrapedAt: new Date().toISOString(),
@@ -65,7 +68,7 @@ export async function POST(req: NextRequest) {
   const { data: product, error } = await supabase.from('products').insert({
     userId: user.id,
     name: scraped.data.name,
-    url, marketplace, country,
+    url, marketplace: brandName, country,
     imageUrl: scraped.data.imageUrl,
     currentPrice: scraped.data.price,
     currency: scraped.data.currency,
