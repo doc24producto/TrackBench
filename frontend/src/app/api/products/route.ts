@@ -11,10 +11,15 @@ export async function GET(req: NextRequest) {
   const user = getUser(req);
   if (!user) return NextResponse.json({ error: 'No autorizado' }, { status: 401 });
 
-  const { data: products } = await supabase.from('products')
+  const { data: products, error } = await supabase.from('products')
     .select('*, competitors(id, name, currentPrice, currency)')
     .eq('userId', user.id)
     .order('createdAt', { ascending: false });
+
+  if (error) {
+    console.error('[GET /api/products] Supabase error:', error);
+    return NextResponse.json({ error: 'Error al obtener productos', detail: error.message }, { status: 500 });
+  }
 
   const withCount = (products || []).map((p) => ({
     ...p,
@@ -33,10 +38,19 @@ export async function POST(req: NextRequest) {
   const security = validateUrl(url);
   if (!security.valid) return NextResponse.json({ error: security.error }, { status: 400 });
 
-  const { count } = await supabase.from('products').select('*', { count: 'exact', head: true }).eq('userId', user.id);
+  const { count, error: countError } = await supabase
+    .from('products')
+    .select('*', { count: 'exact', head: true })
+    .eq('userId', user.id);
+
+  if (countError) {
+    console.error('[POST /api/products] Count error:', countError);
+    return NextResponse.json({ error: 'Error al verificar límite', detail: countError.message }, { status: 500 });
+  }
+
   const limit = TIER_LIMITS[user.subscriptionTier] ?? 3;
   if ((count ?? 0) >= limit) {
-    return NextResponse.json({ error: `Tu plan permite hasta ${limit} productos` }, { status: 403 });
+    return NextResponse.json({ error: `Alcanzaste el límite de ${limit} productos en tu plan actual` }, { status: 403 });
   }
 
   const marketplace = detectMarketplace(url);
@@ -51,7 +65,10 @@ export async function POST(req: NextRequest) {
       lastScrapedAt: new Date().toISOString(),
     }).select().single();
 
-    if (error) return NextResponse.json({ error: 'Error al guardar' }, { status: 500 });
+    if (error) {
+      console.error('[POST /api/products] Insert (manual) error:', error);
+      return NextResponse.json({ error: 'Error al guardar', detail: error.message }, { status: 500 });
+    }
     if (manualPrice) {
       await supabase.from('price_history').insert({
         productId: product.id, price: parseFloat(manualPrice), currency: manualCurrency || 'ARS',
@@ -76,7 +93,10 @@ export async function POST(req: NextRequest) {
     lastScrapedAt: new Date().toISOString(),
   }).select().single();
 
-  if (error) return NextResponse.json({ error: 'Error al guardar' }, { status: 500 });
+  if (error) {
+    console.error('[POST /api/products] Insert error:', error);
+    return NextResponse.json({ error: 'Error al guardar', detail: error.message }, { status: 500 });
+  }
 
   if (scraped.data.price) {
     await supabase.from('price_history').insert({
