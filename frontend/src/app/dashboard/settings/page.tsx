@@ -9,8 +9,20 @@ import { Badge } from '@/components/ui/Badge';
 import { useAuthStore } from '@/store/authStore';
 import api from '@/lib/api';
 
+const TIER_LIMITS: Record<string, number> = {
+  FREE: 3, STARTER: 10, GROWTH: 25, PRO: 100,
+};
+
+const PLANS = [
+  { tier: 'STARTER', price: '$29/mes', features: '10 productos, 20 competidores, alertas' },
+  { tier: 'GROWTH',  price: '$79/mes', features: '25 productos, 50 competidores' },
+  { tier: 'PRO',     price: '$199/mes', features: 'Todo + acceso API' },
+];
+
+const tierOrder = ['FREE', 'STARTER', 'GROWTH', 'PRO'];
+
 export default function SettingsPage() {
-  const { user } = useAuthStore();
+  const { user, setAuth, accessToken, refreshToken } = useAuthStore();
   const queryClient = useQueryClient();
 
   const { data: alertSettings } = useQuery({
@@ -24,52 +36,65 @@ export default function SettingsPage() {
   });
 
   const [threshold, setThreshold] = useState('5');
-  const [emailAlerts, setEmailAlerts] = useState(true);
-  const [dailyDigest, setDailyDigest] = useState(false);
+  const [emailEnabled, setEmailEnabled] = useState(true);
   const [saved, setSaved] = useState(false);
+  const [upgrading, setUpgrading] = useState<string | null>(null);
 
   useEffect(() => {
     if (alertSettings) {
-      setThreshold(String(alertSettings.priceChangeThreshold));
-      setEmailAlerts(alertSettings.emailAlerts);
-      setDailyDigest(alertSettings.dailyDigest);
+      setThreshold(String(alertSettings.priceDropPct ?? 5));
+      setEmailEnabled(alertSettings.emailEnabled ?? true);
     }
   }, [alertSettings]);
 
   const saveSettings = useMutation({
     mutationFn: async () => {
       await api.put('/api/alerts/settings', {
-        emailAlerts,
-        dailyDigest,
-        priceChangeThreshold: parseFloat(threshold),
+        emailEnabled,
+        priceDropPct: parseFloat(threshold),
+        priceRisePct: parseFloat(threshold),
       });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['alertSettings'] });
       setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
+      setTimeout(() => setSaved(false), 2500);
     },
   });
 
   const handleUpgrade = async (tier: string) => {
-    const { data } = await api.post('/api/subscription/upgrade', { tier });
-    if (data.url) window.location.href = data.url;
+    setUpgrading(tier);
+    try {
+      const { data } = await api.post('/api/subscription/upgrade', { tier });
+      // Update store with new tokens so subscriptionTier takes effect immediately
+      if (data.accessToken && user) {
+        setAuth({ ...user, subscriptionTier: tier }, data.accessToken, data.refreshToken);
+      }
+      queryClient.invalidateQueries({ queryKey: ['subscription'] });
+      queryClient.invalidateQueries({ queryKey: ['products'] });
+    } catch {
+      alert('No se pudo cambiar el plan. Intentá de nuevo.');
+    } finally {
+      setUpgrading(null);
+    }
   };
 
-  const tierOrder = ['FREE', 'STARTER', 'GROWTH', 'PRO'];
-  const currentTierIndex = tierOrder.indexOf(user?.subscriptionTier || 'FREE');
+  const currentTier = user?.subscriptionTier || 'FREE';
+  const currentTierIndex = tierOrder.indexOf(currentTier);
+  const maxProducts = TIER_LIMITS[currentTier] ?? 3;
+  const usedProducts = subscription?.usage?.products ?? 0;
 
   return (
     <div>
-      <Header title="Settings" subtitle="Manage your account and notification preferences" />
+      <Header title="Configuración" subtitle="Manejá tu cuenta y preferencias" />
 
       <div className="space-y-6">
-        {/* Account */}
+        {/* Cuenta */}
         <Card>
-          <CardHeader><CardTitle>Account</CardTitle></CardHeader>
+          <CardHeader><CardTitle>Cuenta</CardTitle></CardHeader>
           <div className="space-y-3">
             <div>
-              <p className="text-sm font-medium text-gray-700">Name</p>
+              <p className="text-sm font-medium text-gray-700">Nombre</p>
               <p className="text-gray-900 mt-1">{user?.name}</p>
             </div>
             <div>
@@ -77,50 +102,52 @@ export default function SettingsPage() {
               <p className="text-gray-900 mt-1">{user?.email}</p>
             </div>
             <div>
-              <p className="text-sm font-medium text-gray-700">Plan</p>
-              <Badge variant="info" className="mt-1">{user?.subscriptionTier}</Badge>
+              <p className="text-sm font-medium text-gray-700">Plan actual</p>
+              <Badge variant="info" className="mt-1">{currentTier}</Badge>
             </div>
           </div>
         </Card>
 
-        {/* Subscription */}
+        {/* Suscripción */}
         <Card id="subscription">
-          <CardHeader><CardTitle>Subscription</CardTitle></CardHeader>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <CardTitle>Suscripción</CardTitle>
+              <span className="text-sm text-gray-500">
+                {usedProducts}/{maxProducts === Infinity ? '∞' : maxProducts} productos usados
+              </span>
+            </div>
+          </CardHeader>
           <div className="space-y-4">
-            {subscription && (
-              <div className="text-sm text-gray-600">
-                {subscription.subscription?.status === 'active' ? (
-                  <p>Active until {new Date(subscription.subscription?.currentPeriodEnd).toLocaleDateString()}</p>
-                ) : (
-                  <p>Free plan — upgrade to unlock more features</p>
-                )}
-                <p className="mt-1">Products used: {subscription.usage?.products} / {subscription.limits?.maxProducts === Infinity ? '∞' : subscription.limits?.maxProducts}</p>
+            {currentTier === 'FREE' && (
+              <div className="bg-brand-50 border border-brand-200 rounded-lg p-3 text-sm text-brand-700">
+                Estás en el plan gratuito. Subí de plan para monitorear más productos y competidores.
               </div>
             )}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              {[
-                { tier: 'STARTER', price: '$29/mo', features: '5 products, 20 competitors, alerts' },
-                { tier: 'GROWTH', price: '$79/mo', features: 'Unlimited products, 50 competitors' },
-                { tier: 'PRO', price: '$199/mo', features: 'Everything + API access' },
-              ].map(({ tier, price, features }) => {
+              {PLANS.map(({ tier, price, features }) => {
                 const tierIdx = tierOrder.indexOf(tier);
-                const isCurrent = tier === user?.subscriptionTier;
+                const isCurrent = tier === currentTier;
                 const isDowngrade = tierIdx < currentTierIndex;
                 return (
-                  <div key={tier} className={`border rounded-lg p-4 ${isCurrent ? 'border-brand-500 bg-brand-50' : 'border-gray-200'}`}>
+                  <div
+                    key={tier}
+                    className={`border rounded-xl p-4 transition-all ${isCurrent ? 'border-brand-500 bg-brand-50 shadow-sm' : 'border-gray-200 hover:border-gray-300'}`}
+                  >
                     <p className="font-semibold text-gray-900">{tier}</p>
-                    <p className="text-lg font-bold text-brand-600 mt-1">{price}</p>
-                    <p className="text-xs text-gray-500 mt-1">{features}</p>
+                    <p className="text-xl font-bold text-brand-600 mt-1">{price}</p>
+                    <p className="text-xs text-gray-500 mt-1 mb-3">{features}</p>
                     {isCurrent ? (
-                      <Badge variant="info" className="mt-3">Current Plan</Badge>
+                      <Badge variant="info">Plan actual</Badge>
                     ) : (
                       <Button
                         size="sm"
                         variant={isDowngrade ? 'secondary' : 'primary'}
-                        className="mt-3 w-full"
+                        className="w-full"
+                        loading={upgrading === tier}
                         onClick={() => handleUpgrade(tier)}
                       >
-                        {isDowngrade ? 'Downgrade' : 'Upgrade'}
+                        {isDowngrade ? 'Bajar a este plan' : 'Subir a este plan'}
                       </Button>
                     )}
                   </div>
@@ -130,48 +157,39 @@ export default function SettingsPage() {
           </div>
         </Card>
 
-        {/* Notifications */}
+        {/* Notificaciones */}
         <Card>
-          <CardHeader><CardTitle>Notifications</CardTitle></CardHeader>
+          <CardHeader><CardTitle>Notificaciones</CardTitle></CardHeader>
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <div>
-                <p className="font-medium text-gray-900">Email Alerts</p>
-                <p className="text-sm text-gray-500">Receive email when competitor prices change</p>
+                <p className="font-medium text-gray-900">Alertas por email</p>
+                <p className="text-sm text-gray-500">Recibí un email cuando cambie el precio de un competidor</p>
               </div>
               <button
-                onClick={() => setEmailAlerts(!emailAlerts)}
-                className={`relative inline-flex h-6 w-11 rounded-full transition-colors ${emailAlerts ? 'bg-brand-600' : 'bg-gray-300'}`}
+                onClick={() => setEmailEnabled(!emailEnabled)}
+                className={`relative inline-flex h-6 w-11 rounded-full transition-colors ${emailEnabled ? 'bg-brand-600' : 'bg-gray-300'}`}
               >
-                <span className={`inline-block h-5 w-5 rounded-full bg-white shadow transition-transform mt-0.5 ${emailAlerts ? 'translate-x-5' : 'translate-x-0.5'}`} />
+                <span className={`inline-block h-5 w-5 rounded-full bg-white shadow transition-transform mt-0.5 ${emailEnabled ? 'translate-x-5' : 'translate-x-0.5'}`} />
               </button>
             </div>
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="font-medium text-gray-900">Daily Digest</p>
-                <p className="text-sm text-gray-500">Get a daily summary email each morning</p>
-              </div>
-              <button
-                onClick={() => setDailyDigest(!dailyDigest)}
-                className={`relative inline-flex h-6 w-11 rounded-full transition-colors ${dailyDigest ? 'bg-brand-600' : 'bg-gray-300'}`}
-              >
-                <span className={`inline-block h-5 w-5 rounded-full bg-white shadow transition-transform mt-0.5 ${dailyDigest ? 'translate-x-5' : 'translate-x-0.5'}`} />
-              </button>
-            </div>
+
             <Input
-              label="Price Change Threshold ($)"
+              label="Umbral de cambio de precio (%)"
               type="number"
               value={threshold}
               onChange={(e) => setThreshold(e.target.value)}
-              min="0.5"
-              step="0.5"
-              hint="Alert when competitor price changes by at least this amount"
+              min="1"
+              max="50"
+              step="1"
+              hint="Alertar cuando el precio cambia al menos este porcentaje"
             />
+
             <div className="flex items-center gap-3">
               <Button onClick={() => saveSettings.mutate()} loading={saveSettings.isPending}>
-                Save Preferences
+                Guardar preferencias
               </Button>
-              {saved && <span className="text-sm text-green-600">Saved!</span>}
+              {saved && <span className="text-sm text-green-600 font-medium">✓ Guardado</span>}
             </div>
           </div>
         </Card>
