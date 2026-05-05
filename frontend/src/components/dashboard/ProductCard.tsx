@@ -26,7 +26,7 @@ export function ProductCard({ product }: ProductCardProps) {
   };
 
   const handleDelete = () => {
-    if (confirm(`Delete "${product.name}"?`)) {
+    if (confirm(`¿Eliminar "${product.name}"?\n\nEsta acción no se puede deshacer.`)) {
       deleteProduct.mutate(product.id);
     }
   };
@@ -69,12 +69,12 @@ export function ProductCard({ product }: ProductCardProps) {
 
       <div className="flex items-center gap-2 px-4 py-3 bg-gray-50 border-t border-gray-100">
         <Link href={`/dashboard/products/${product.id}`} className="flex-1">
-          <Button variant="primary" size="sm" className="w-full">View Details</Button>
+          <Button variant="primary" size="sm" className="w-full">Ver detalle</Button>
         </Link>
         <button
           onClick={handleRefresh}
           className="p-1.5 text-gray-400 hover:text-brand-600 hover:bg-brand-50 rounded transition-colors"
-          title="Refresh"
+          title="Actualizar precio"
         >
           <RefreshCw size={15} />
         </button>
@@ -83,14 +83,15 @@ export function ProductCard({ product }: ProductCardProps) {
           target="_blank"
           rel="noopener noreferrer"
           className="p-1.5 text-gray-400 hover:text-brand-600 hover:bg-brand-50 rounded transition-colors"
-          title="Open in marketplace"
+          title="Abrir en tienda"
         >
           <ExternalLink size={15} />
         </a>
         <button
           onClick={handleDelete}
-          className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
-          title="Delete"
+          disabled={deleteProduct.isPending}
+          className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors disabled:opacity-50"
+          title="Eliminar producto"
         >
           <Trash2 size={15} />
         </button>

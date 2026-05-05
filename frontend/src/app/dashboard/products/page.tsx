@@ -1,6 +1,6 @@
 'use client';
 import { useState } from 'react';
-import { Plus, Package, AlertCircle } from 'lucide-react';
+import { Plus, Package, AlertCircle, TrendingUp } from 'lucide-react';
 import { Header } from '@/components/dashboard/Header';
 import { ProductCard } from '@/components/dashboard/ProductCard';
 import { Button } from '@/components/ui/Button';
@@ -8,13 +8,23 @@ import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
 import { useProducts } from '@/hooks/useProducts';
 import { useQueryClient } from '@tanstack/react-query';
+import { useAuthStore } from '@/store/authStore';
 import api from '@/lib/api';
+
+const TIER_LIMITS: Record<string, number> = {
+  FREE: 3, STARTER: 10, GROWTH: 25, PRO: 100,
+};
+
+const TIER_NEXT: Record<string, string> = {
+  FREE: 'Starter', STARTER: 'Growth', GROWTH: 'Pro',
+};
 
 type Step = 'url' | 'manual';
 
 export default function ProductsPage() {
   const { data: products, isLoading } = useProducts();
   const queryClient = useQueryClient();
+  const { user } = useAuthStore();
 
   const [modalOpen, setModalOpen] = useState(false);
   const [step, setStep] = useState<Step>('url');
@@ -25,6 +35,13 @@ export default function ProductsPage() {
   const [name, setName] = useState('');
   const [price, setPrice] = useState('');
   const [currency, setCurrency] = useState('ARS');
+
+  const tier = user?.subscriptionTier ?? 'FREE';
+  const limit = TIER_LIMITS[tier] ?? 3;
+  const used = products?.length ?? 0;
+  const remaining = Math.max(0, limit - used);
+  const atLimit = used >= limit;
+  const pct = Math.min(100, Math.round((used / limit) * 100));
 
   const resetModal = () => {
     setStep('url');
@@ -43,7 +60,6 @@ export default function ProductsPage() {
     try {
       const { data } = await api.post('/api/products', { url });
       if (data.scraped === false) {
-        // Scraping falló — mostrar formulario manual
         setStep('manual');
       } else {
         queryClient.invalidateQueries({ queryKey: ['products'] });
@@ -82,11 +98,56 @@ export default function ProductsPage() {
         title="Productos"
         subtitle="Gestioná los productos que estás monitoreando"
         actions={
-          <Button onClick={() => { setModalOpen(true); resetModal(); }}>
+          <Button
+            onClick={() => { setModalOpen(true); resetModal(); }}
+            disabled={atLimit}
+            title={atLimit ? `Límite del plan ${tier} alcanzado` : undefined}
+          >
             <Plus size={16} /> Agregar Producto
           </Button>
         }
       />
+
+      {/* ── Barra de uso del plan ── */}
+      {!isLoading && (
+        <div className={`mb-6 rounded-xl border p-4 ${atLimit ? 'border-red-200 bg-red-50' : 'border-gray-200 bg-white'}`}>
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-medium text-gray-700">
+                Productos en tu plan <span className="text-brand-600 font-semibold">{tier}</span>
+              </span>
+              <span className={`text-sm font-bold ${atLimit ? 'text-red-600' : 'text-gray-900'}`}>
+                {used}/{limit}
+              </span>
+            </div>
+            {tier !== 'PRO' && (
+              <button className="text-xs font-medium text-brand-600 hover:text-brand-700 flex items-center gap-1">
+                <TrendingUp size={12} />
+                Subir a {TIER_NEXT[tier] ?? 'Pro'}
+              </button>
+            )}
+          </div>
+
+          <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+            <div
+              className={`h-2 rounded-full transition-all duration-500 ${
+                atLimit ? 'bg-red-500' : pct >= 66 ? 'bg-yellow-400' : 'bg-brand-500'
+              }`}
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+
+          {atLimit ? (
+            <p className="text-xs text-red-600 mt-2">
+              Llegaste al límite de tu plan. Eliminá un producto para agregar otro, o subí de plan para monitorear más.
+            </p>
+          ) : (
+            <p className="text-xs text-gray-500 mt-2">
+              {remaining} {remaining === 1 ? 'producto disponible' : 'productos disponibles'} en tu plan actual.
+            </p>
+          )}
+        </div>
+      )}
 
       {isLoading ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -98,7 +159,7 @@ export default function ProductsPage() {
         <div className="bg-white rounded-xl border-2 border-dashed border-gray-300 p-16 text-center">
           <Package size={40} className="text-gray-300 mx-auto mb-4" />
           <h3 className="text-lg font-semibold text-gray-700 mb-2">Todavía no tenés productos</h3>
-          <p className="text-gray-500 text-sm mb-6">Pegá una URL de MercadoLibre, Amazon o Shopify para empezar.</p>
+          <p className="text-gray-500 text-sm mb-6">Pegá una URL de MercadoLibre, Amazon o cualquier tienda para empezar.</p>
           <Button onClick={() => { setModalOpen(true); resetModal(); }}>
             <Plus size={16} /> Agregar tu primer producto
           </Button>
@@ -124,7 +185,7 @@ export default function ProductsPage() {
               value={url}
               onChange={(e) => setUrl(e.target.value)}
               placeholder="https://www.mercadolibre.com.ar/..."
-              hint="Pegá la URL de un producto de MercadoLibre, Amazon o Shopify"
+              hint="Pegá la URL de un producto de MercadoLibre, Amazon o cualquier tienda"
               required
               autoFocus
             />
@@ -143,7 +204,7 @@ export default function ProductsPage() {
             <div className="flex items-start gap-2 bg-yellow-50 border border-yellow-200 rounded-lg p-3">
               <AlertCircle size={16} className="text-yellow-600 mt-0.5 flex-shrink-0" />
               <p className="text-sm text-yellow-700">
-                No pudimos leer los datos automáticamente. Ingresalos a mano — igual vamos a guardar la URL para monitorear cambios.
+                No pudimos leer los datos automáticamente. Ingresalos a mano — igual guardamos la URL para monitorear cambios.
               </p>
             </div>
 
