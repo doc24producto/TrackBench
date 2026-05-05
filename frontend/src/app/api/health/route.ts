@@ -64,6 +64,25 @@ export async function GET() {
   void colData; void colErr;
 
   // Direct column list
+  // Test actual INSERT (dry run — insert then immediately delete)
+  const testInsertData = {
+    userId: '00000000-0000-0000-0000-000000000001',
+    name: '__health_check__',
+    url: 'https://example.com',
+    marketplace: 'test',
+    country: 'com',
+    isAvailable: true,
+    currency: 'ARS',
+    lastScrapedAt: new Date().toISOString(),
+  };
+  const { data: inserted, error: insertErr } = await supabase
+    .from('products').insert(testInsertData).select('id').single();
+  if (inserted?.id) await supabase.from('products').delete().eq('id', inserted.id);
+  checks['insert:products'] = {
+    ok: !insertErr,
+    detail: insertErr ? `${insertErr.code}: ${insertErr.message}` : 'insert+delete ok',
+  };
+
   const { data: productRow } = await supabase.from('products').select('*').limit(1);
   checks['columns:products'] = {
     ok: true,

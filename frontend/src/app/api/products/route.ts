@@ -68,6 +68,7 @@ export async function POST(req: NextRequest) {
       userId: user.id, name: manualName, url, marketplace: brandName, country,
       currentPrice: manualPrice ? parseFloat(manualPrice) : null,
       currency: manualCurrency || 'ARS',
+      isAvailable: true,
       lastScrapedAt: new Date().toISOString(),
     }).select().single();
 
@@ -102,6 +103,7 @@ export async function POST(req: NextRequest) {
     currentPrice: scraped.data.price,
     currency: scraped.data.currency,
     sku: scraped.data.sku,
+    isAvailable: true,
     lastScrapedAt: new Date().toISOString(),
   }).select().single();
 
