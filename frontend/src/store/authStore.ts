@@ -21,6 +21,6 @@ export const useAuthStore = create<AuthState>()(
       setTokens: (accessToken, refreshToken) => set({ accessToken, refreshToken }),
       logout: () => set({ user: null, accessToken: null, refreshToken: null }),
     }),
-    { name: 'ct-auth' }
+    { name: 'ct-auth', skipHydration: true }
   )
 );
