@@ -22,7 +22,7 @@ const TIER_NEXT: Record<string, string> = {
 type Step = 'url' | 'manual';
 
 export default function ProductsPage() {
-  const { data: products, isLoading } = useProducts();
+  const { data: products, isLoading, error: productsError } = useProducts();
   const queryClient = useQueryClient();
   const { user } = useAuthStore();
 
@@ -109,6 +109,17 @@ export default function ProductsPage() {
           </Button>
         }
       />
+
+      {/* ── Error de carga ── */}
+      {productsError && (
+        <div className="mb-6 bg-red-50 border border-red-200 rounded-xl p-4 text-sm">
+          <p className="font-semibold text-red-700">Error al cargar productos</p>
+          <p className="text-red-600 mt-1">{productsError.message}</p>
+          {productsError.detail && (
+            <p className="text-red-500 mt-1 font-mono text-xs">{productsError.detail}</p>
+          )}
+        </div>
+      )}
 
       {/* ── Barra de uso del plan ── */}
       {!isLoading && (

@@ -4,12 +4,18 @@ import api from '@/lib/api';
 import { Product } from '@/types';
 
 export function useProducts() {
-  return useQuery<Product[]>({
+  return useQuery<Product[], { message: string; detail?: string }>({
     queryKey: ['products'],
     queryFn: async () => {
-      const { data } = await api.get('/api/products');
-      return data;
+      try {
+        const { data } = await api.get('/api/products');
+        return data;
+      } catch (e: unknown) {
+        const resp = (e as { response?: { data?: { error?: string; detail?: string; code?: string } } }).response?.data;
+        throw { message: resp?.error ?? 'Error desconocido', detail: resp?.detail ?? resp?.code ?? String(e) };
+      }
     },
+    retry: 1,
   });
 }
 
