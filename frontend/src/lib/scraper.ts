@@ -202,7 +202,7 @@ async function scrapeGeneric(url: string): Promise<ScrapeResult> {
       validateStatus: (s) => s < 400, // no lanzar en 3xx
     });
     // Si no es HTML, no podemos parsear
-    const contentType = res.headers['content-type'] ?? '';
+    const contentType = String(res.headers['content-type'] ?? '');
     if (!contentType.includes('text/html') && !contentType.includes('application/xhtml')) {
       return { success: false, error: 'El sitio no devolvió una página HTML parseable.' };
     }
