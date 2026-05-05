@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
+import axios from 'axios';
 
 export async function GET() {
   const checks: Record<string, { ok: boolean; detail?: string }> = {};
@@ -94,6 +95,43 @@ export async function GET() {
     ok: true,
     detail: compRow?.[0] ? Object.keys(compRow[0]).join(', ') : 'no rows — cannot inspect columns',
   };
+
+  // Test ML API reachability + specific item
+  try {
+    const { data: mlItem } = await axios.get(
+      'https://api.mercadolibre.com/items/MLA3240312026',
+      { timeout: 6000 }
+    );
+    checks['ml_api:item'] = {
+      ok: !!mlItem?.title,
+      detail: mlItem?.title ? `ok — "${mlItem.title}" $${mlItem.price}` : `response has no title: ${JSON.stringify(mlItem).slice(0, 200)}`,
+    };
+  } catch (e: unknown) {
+    const err = e as { message?: string; response?: { status?: number; data?: unknown } };
+    checks['ml_api:item'] = {
+      ok: false,
+      detail: `${err.response?.status ?? 'network_error'}: ${err.message} — ${JSON.stringify(err.response?.data ?? '').slice(0, 200)}`,
+    };
+  }
+
+  // Test ML search API
+  try {
+    const { data: mlSearch } = await axios.get(
+      'https://api.mercadolibre.com/sites/MLA/search?q=cartera+bandolera&limit=1',
+      { timeout: 6000 }
+    );
+    const first = mlSearch?.results?.[0];
+    checks['ml_api:search'] = {
+      ok: !!first,
+      detail: first ? `ok — "${first.title}" MLA_id:${first.id}` : 'no results',
+    };
+  } catch (e: unknown) {
+    const err = e as { message?: string; response?: { status?: number } };
+    checks['ml_api:search'] = {
+      ok: false,
+      detail: `${err.response?.status ?? 'network_error'}: ${err.message}`,
+    };
+  }
 
   const allOk = Object.values(checks).every((c) => c.ok);
   return NextResponse.json({ ok: allOk, checks }, { status: allOk ? 200 : 500 });
