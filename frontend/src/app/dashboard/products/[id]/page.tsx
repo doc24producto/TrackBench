@@ -66,14 +66,25 @@ export default function ProductDetailPage() {
     }
   };
 
+  const looksLikeUrl = (s: string) => /^https?:\/\//i.test(s.trim());
+
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!searchQuery.trim()) return;
+    const q = searchQuery.trim();
+    if (!q) return;
+
+    // If the user pasted a URL, jump to the URL form
+    if (looksLikeUrl(q)) {
+      setCompetitorUrl(q);
+      setCompStep('url');
+      return;
+    }
+
     setSearching(true);
     setCompetitorError('');
     setSearchResults([]);
     try {
-      const { data } = await api.get(`/api/search?q=${encodeURIComponent(searchQuery.trim())}`);
+      const { data } = await api.get(`/api/search?q=${encodeURIComponent(q)}`);
       setSearchResults(data.results ?? []);
       if (!data.results?.length) setCompetitorError('Sin resultados. Probá otra búsqueda o pegá la URL.');
     } catch {
@@ -280,7 +291,7 @@ export default function ProductDetailPage() {
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder={`Buscá "${product.name}"...`}
+                  placeholder="Nombre, EAN o pegar URL directamente..."
                   autoFocus
                 />
               </div>
