@@ -1,34 +1,43 @@
+/**
+ * scraper.ts
+ *
+ * Strategy per marketplace:
+ *  • MercadoLibre  → official public Items/Products API (no auth, never blocked, ~300 ms)
+ *  • Amazon        → HTML scraping with Cheerio (often blocked; graceful fallback to manual)
+ *  • Tiendanube    → JSON-LD (they embed it correctly)
+ *  • Generic       → JSON-LD → __NEXT_DATA__ → Open Graph → CSS selectors
+ *
+ * All helpers are exported so route handlers can reuse them.
+ */
+
 import axios from 'axios';
 import * as cheerio from 'cheerio';
 
-export interface ScrapeResult {
-  success: boolean;
-  data?: {
-    name: string;
-    price: number | null;
-    currency: string;
-    imageUrl: string | null;
-    sku: string | null;
-  };
-  error?: string;
+// ── Types ────────────────────────────────────────────────────────────────────
+
+export interface ScrapeData {
+  name: string;
+  price: number | null;
+  currency: string;
+  imageUrl: string | null;
+  sku: string | null;
+  brand: string | null;
+  description: string | null;
+  isAvailable: boolean;
+  rating: number | null;
+  reviewCount: number | null;
 }
 
-const HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-  'Accept-Language': 'es-AR,es;q=0.9,en;q=0.8',
-  'Accept-Encoding': 'gzip, deflate, br',
-  'Connection': 'keep-alive',
-  'Upgrade-Insecure-Requests': '1',
-  'Sec-Fetch-Dest': 'document',
-  'Sec-Fetch-Mode': 'navigate',
-  'Sec-Fetch-Site': 'none',
-  'Cache-Control': 'max-age=0',
-};
+export interface ScrapeResult {
+  success: boolean;
+  data?: ScrapeData;
+  error?: string;
+  source?: string; // 'ml_items_api' | 'ml_products_api' | 'ml_search_api' | 'amazon_html' | 'json_ld' | 'og' | 'manual'
+}
 
-// ─── Seguridad ─────────────────────────────────────────────────────────────────
+// ── Security ─────────────────────────────────────────────────────────────────
 
-const BLOCKED_PATTERNS = [
+const PRIVATE_IP = [
   /^(localhost|127\.|0\.0\.0\.0|::1)/i,
   /^10\.\d+\.\d+\.\d+/,
   /^172\.(1[6-9]|2\d|3[01])\.\d+\.\d+/,
@@ -38,25 +47,29 @@ const BLOCKED_PATTERNS = [
 export function validateUrl(url: string): { valid: boolean; error?: string } {
   let parsed: URL;
   try { parsed = new URL(url); } catch {
-    return { valid: false, error: 'URL inválida' };
+    return { valid: false, error: 'URL inválida. Verificá que empiece con https://' };
   }
   if (!['http:', 'https:'].includes(parsed.protocol)) {
     return { valid: false, error: 'Solo se permiten URLs http/https' };
   }
   const host = parsed.hostname;
-  for (const pattern of BLOCKED_PATTERNS) {
-    if (pattern.test(host)) return { valid: false, error: 'URL no permitida' };
+  for (const p of PRIVATE_IP) {
+    if (p.test(host)) return { valid: false, error: 'URL de red privada no permitida' };
   }
   if (!host.includes('.')) return { valid: false, error: 'Dominio inválido' };
   return { valid: true };
 }
 
-// ─── Detección de marketplace ──────────────────────────────────────────────────
+// ── Marketplace detection ─────────────────────────────────────────────────────
 
 export function detectMarketplace(url: string): string {
   const lower = url.toLowerCase();
-  if (lower.includes('mercadolibre') || lower.includes('articulo.mercado')) return 'mercadolibre';
+  if (lower.includes('mercadolibre') || lower.includes('articulo.mercado') || lower.includes('listado.mercado')) return 'mercadolibre';
   if (lower.includes('amazon')) return 'amazon';
+  if (lower.includes('tiendanube') || lower.includes('nuvemshop') || lower.includes('mitienda')) return 'tiendanube';
+  if (lower.includes('shopify')) return 'shopify';
+  if (lower.includes('falabella')) return 'falabella';
+  if (lower.includes('rappi')) return 'rappi';
   try {
     const host = new URL(url).hostname.replace('www.', '');
     const parts = host.split('.');
@@ -65,18 +78,27 @@ export function detectMarketplace(url: string): string {
 }
 
 export function detectCountry(url: string): string {
-  if (url.includes('.com.br')) return 'com.br';
-  if (url.includes('.com.mx')) return 'com.mx';
-  if (url.includes('.com.ar')) return 'com.ar';
-  if (url.includes('.com.co')) return 'com.co';
-  if (url.includes('.com.cl')) return 'com.cl';
-  return 'com';
+  if (url.includes('.com.ar')) return 'AR';
+  if (url.includes('.com.br')) return 'BR';
+  if (url.includes('.com.mx')) return 'MX';
+  if (url.includes('.com.co')) return 'CO';
+  if (url.includes('.com.cl')) return 'CL';
+  if (url.includes('.com.uy')) return 'UY';
+  if (url.includes('.com.pe')) return 'PE';
+  return 'COM';
 }
 
 export function getBrandName(url: string): string {
   const mp = detectMarketplace(url);
-  if (mp === 'mercadolibre') return 'MercadoLibre';
-  if (mp === 'amazon') return 'Amazon';
+  const NAMES: Record<string, string> = {
+    mercadolibre: 'MercadoLibre',
+    amazon: 'Amazon',
+    tiendanube: 'Tiendanube',
+    shopify: 'Shopify',
+    falabella: 'Falabella',
+    rappi: 'Rappi',
+  };
+  if (NAMES[mp]) return NAMES[mp];
   try {
     const host = new URL(url).hostname.replace('www.', '');
     const name = host.split('.')[0];
@@ -84,384 +106,389 @@ export function getBrandName(url: string): string {
   } catch { return mp; }
 }
 
-// ─── MercadoLibre ──────────────────────────────────────────────────────────────
+// ── MercadoLibre — Official API (primary path) ────────────────────────────────
 
-function detectMLSite(url: string): string {
+type MLSite = 'MLA' | 'MLB' | 'MLM' | 'MLC' | 'MLCO' | 'MLU' | 'MLPE';
+
+function getMLSite(url: string): MLSite {
   if (url.includes('.com.ar')) return 'MLA';
   if (url.includes('.com.br')) return 'MLB';
   if (url.includes('.com.mx')) return 'MLM';
-  if (url.includes('.com.co')) return 'MLCO';
   if (url.includes('.com.cl')) return 'MLC';
+  if (url.includes('.com.co')) return 'MLCO';
   if (url.includes('.com.uy')) return 'MLU';
+  if (url.includes('.com.pe')) return 'MLPE';
   return 'MLA';
 }
 
-function extractMercadoLibreId(url: string): string | null {
-  // Formato directo: MLA1234567890 o MLA-1234567890
-  const match = url.match(/(MLA|MLB|MLM|MLC|MLU|MLCO)-?(\d{6,12})/i);
-  if (!match) return null;
-  return `${match[1].toUpperCase()}${match[2]}`;
+/**
+ * Extracts MercadoLibre item or product IDs from any ML URL.
+ *
+ * Formats encountered in the wild:
+ *  - Catalog page:  .../Title/p/MLA30305877
+ *  - Item via subdomain: articulo.mercadolibre.com.ar/MLA-2958043267-title-_JM
+ *  - Item embedded: .../MLA-2958043267-..._JM (in listings)
+ *  - Old-style item: ends with _JM, ID in path
+ */
+function extractMLIds(url: string): { itemId?: string; productId?: string } {
+  // Catalog product page — /p/MLA12345678 (at end of path or before query)
+  const catalogMatch = url.match(/\/p\/(ML[A-Z]+\d+)(?:[/#?]|$)/i);
+  if (catalogMatch) {
+    return { productId: catalogMatch[1].toUpperCase() };
+  }
+
+  // Item ID — ML[country_code]-[digits] anywhere in the URL
+  const itemMatch = url.match(/\b(ML[A-Z]{1,4})-?(\d{5,12})\b/i);
+  if (itemMatch) {
+    return { itemId: `${itemMatch[1].toUpperCase()}${itemMatch[2]}` };
+  }
+
+  return {};
 }
 
+const ML_API = axios.create({ baseURL: 'https://api.mercadolibre.com', timeout: 6000 });
+
 async function fetchMLItem(itemId: string): Promise<ScrapeResult> {
-  const { data } = await axios.get(
-    `https://api.mercadolibre.com/items/${itemId}`,
-    { timeout: 6000 }
-  );
+  const { data } = await ML_API.get(`/items/${itemId}`);
+  if (!data?.title) return { success: false, error: 'Respuesta inesperada de la API de MercadoLibre.' };
   return {
     success: true,
+    source: 'ml_items_api',
     data: {
       name: data.title,
       price: data.price ?? null,
       currency: data.currency_id ?? 'ARS',
-      imageUrl: data.thumbnail?.replace('http://', 'https://') ?? null,
+      imageUrl: data.thumbnail?.replace('http://', 'https://') ?? data.pictures?.[0]?.url ?? null,
       sku: data.id ?? null,
+      brand: data.attributes?.find((a: { id: string; value_name: string }) => a.id === 'BRAND')?.value_name ?? null,
+      description: null,
+      isAvailable: data.status === 'active',
+      rating: data.seller_reputation?.level_id ? null : null,
+      reviewCount: data.reviews?.rating_average ? null : null,
     },
   };
 }
 
-async function scrapeMercadoLibre(url: string): Promise<ScrapeResult> {
-  const site = detectMLSite(url);
-  const parsed = new URL(url);
+async function fetchMLProduct(productId: string): Promise<ScrapeResult> {
+  const { data } = await ML_API.get(`/products/${productId}`);
+  if (!data?.name) return { success: false, error: 'Producto no encontrado en MercadoLibre.' };
+  return {
+    success: true,
+    source: 'ml_products_api',
+    data: {
+      name: data.name,
+      price: data.buy_box_winner?.price ?? null,
+      currency: data.buy_box_winner?.currency_id ?? 'ARS',
+      imageUrl: data.pictures?.[0]?.url ?? null,
+      sku: data.id ?? null,
+      brand: data.attributes?.find((a: { id: string; value_name: string }) => a.id === 'BRAND')?.value_name ?? null,
+      description: data.short_description?.content ?? null,
+      isAvailable: true,
+      rating: data.reviews?.rating_average ?? null,
+      reviewCount: data.reviews?.total ?? null,
+    },
+  };
+}
 
-  // ── 1. Extraer item ID del fragment: wid=MLA3240312026 ────────────────────
-  // URLs tipo: /up/MLAU...#...&wid=MLA123&...  (links desde search results)
-  const hashParams = new URLSearchParams(parsed.hash.replace('#', ''));
-  const widId = hashParams.get('wid');
-  if (widId && /^ML[A-Z]{1,2}\d+$/i.test(widId)) {
-    try { return await fetchMLItem(widId.toUpperCase()); } catch { /* fall through */ }
-  }
+/** Search ML by query string — last resort fallback when we can't extract an ID */
+async function searchML(query: string, site: MLSite): Promise<ScrapeResult> {
+  const { data } = await ML_API.get(`/sites/${site}/search`, {
+    params: { q: query.slice(0, 80), limit: 1 },
+  });
+  const first = data?.results?.[0];
+  if (!first?.title) return { success: false, error: 'No se encontraron resultados en MercadoLibre.' };
+  return {
+    success: true,
+    source: 'ml_search_api',
+    data: {
+      name: first.title,
+      price: first.price ?? null,
+      currency: first.currency_id ?? 'ARS',
+      imageUrl: first.thumbnail?.replace('http://', 'https://') ?? null,
+      sku: first.id ?? null,
+      brand: null,
+      description: null,
+      isAvailable: first.listing_type_id !== 'bronze',
+      rating: null,
+      reviewCount: null,
+    },
+  };
+}
 
-  // ── 2. Catalog URL: /p/MLAxxx ─────────────────────────────────────────────
-  const catalogMatch = parsed.pathname.match(/\/p\/(ML[A-Z]{1,2}\d+)/i);
-  if (catalogMatch) {
-    const catalogId = catalogMatch[1].toUpperCase();
+export async function scrapeMercadoLibre(url: string): Promise<ScrapeResult> {
+  const site = getMLSite(url);
+  const { itemId, productId } = extractMLIds(url);
+
+  // ── 1. Catalog product page
+  if (productId) {
     try {
-      const { data } = await axios.get(`https://api.mercadolibre.com/products/${catalogId}`, { timeout: 6000 });
-      if (data.name) {
-        return {
-          success: true,
-          data: {
-            name: data.name,
-            price: data.buy_box_winner?.price ?? null,
-            currency: data.buy_box_winner?.currency_id ?? 'ARS',
-            imageUrl: data.pictures?.[0]?.url?.replace('http://', 'https://') ?? null,
-            sku: catalogId,
-          },
-        };
-      }
-    } catch { /* fall through */ }
+      return await fetchMLProduct(productId);
+    } catch (e: unknown) {
+      const status = (e as { response?: { status?: number } }).response?.status;
+      if (status === 404) return { success: false, error: 'Producto no encontrado en MercadoLibre. Verificá la URL.' };
+      // Fallthrough to item attempt
+    }
   }
 
-  // ── 3. Universal Product URL: /up/MLAU... ─────────────────────────────────
-  const upMatch = parsed.pathname.match(/\/up\/(ML[A-Z]{1,3}\d+)/i);
-  if (upMatch) {
-    const upId = upMatch[1].toUpperCase();
-    try {
-      const { data } = await axios.get(`https://api.mercadolibre.com/products/${upId}`, { timeout: 6000 });
-      if (data.name) {
-        return {
-          success: true,
-          data: {
-            name: data.name,
-            price: data.buy_box_winner?.price ?? null,
-            currency: data.buy_box_winner?.currency_id ?? 'ARS',
-            imageUrl: data.pictures?.[0]?.url?.replace('http://', 'https://') ?? null,
-            sku: upId,
-          },
-        };
-      }
-    } catch { /* fall through */ }
-  }
-
-  // ── 4. Item ID directo en la URL: MLA123456 o MLA-123456 ──────────────────
-  const itemId = extractMercadoLibreId(url);
+  // ── 2. Direct item ID
   if (itemId) {
     try {
       return await fetchMLItem(itemId);
     } catch (e: unknown) {
       const status = (e as { response?: { status?: number } }).response?.status;
-      if (status !== 404) { /* fall through to search */ }
-      else return { success: false, error: 'Producto no encontrado en MercadoLibre.' };
+      if (status === 404) return { success: false, error: 'Publicación no encontrada en MercadoLibre. Verificá la URL.' };
+      // Fallthrough to search
     }
   }
 
-  // ── 5. Fallback: buscar por nombre en ML search API ───────────────────────
+  // ── 3. Build a search query from the URL slug (last fallback)
   try {
-    const pathSegments = parsed.pathname.split('/').filter(Boolean);
-    // Ignorar segmentos que sean IDs o palabras clave de navegación
-    const ignoredSegments = new Set(['up', 'p', 'jm', 'noindex', 'listado']);
-    const nameSeg = pathSegments.find(s => s.length > 5 && !ignoredSegments.has(s.toLowerCase()) && !/^ML/i.test(s));
-    const searchTerm = (nameSeg || pathSegments[0] || '').replace(/-/g, ' ').trim();
-
-    if (!searchTerm) {
-      return { success: false, error: 'No se pudo identificar el producto en esta URL de MercadoLibre.' };
+    const parsed = new URL(url);
+    const segments = parsed.pathname.split('/').filter(Boolean);
+    const ignored = new Set(['up', 'p', 'jm', 'listado', 'noindex', 'ofertas', 'mas-vendidos']);
+    const slug = segments.find(s => s.length > 4 && !ignored.has(s.toLowerCase()) && !/^ML/i.test(s));
+    if (slug) {
+      const query = decodeURIComponent(slug).replace(/-/g, ' ').trim();
+      return await searchML(query, site);
     }
+  } catch { /* */ }
 
-    const { data: searchData } = await axios.get(
-      `https://api.mercadolibre.com/sites/${site}/search?q=${encodeURIComponent(searchTerm)}&limit=1`,
-      { timeout: 6000 }
-    );
-    const first = searchData?.results?.[0];
-    if (!first) return { success: false, error: 'No se encontraron resultados en MercadoLibre.' };
-
-    try { return await fetchMLItem(first.id); } catch {
-      return {
-        success: true,
-        data: {
-          name: first.title,
-          price: first.price ?? null,
-          currency: first.currency_id ?? 'ARS',
-          imageUrl: first.thumbnail?.replace('http://', 'https://') ?? null,
-          sku: first.id ?? null,
-        },
-      };
-    }
-  } catch {
-    return { success: false, error: 'No se pudo conectar con MercadoLibre. Intentá de nuevo.' };
-  }
+  return {
+    success: false,
+    error: 'No pudimos identificar el producto en esta URL de MercadoLibre. Asegurate de pegar la URL de un producto específico, no de una búsqueda.',
+  };
 }
 
-// ─── Amazon ────────────────────────────────────────────────────────────────────
+// ── Amazon ─────────────────────────────────────────────────────────────────────
+
+const BROWSER_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  'Accept-Language': 'es-AR,es;q=0.9,en;q=0.8',
+  'Accept-Encoding': 'gzip, deflate, br',
+  'Cache-Control': 'no-cache',
+};
 
 async function scrapeAmazon(url: string): Promise<ScrapeResult> {
   try {
-    const res = await axios.get(url, { headers: HEADERS, timeout: 6000 });
+    const res = await axios.get(url, { headers: BROWSER_HEADERS, timeout: 5000 });
     const $ = cheerio.load(res.data);
     const name = $('#productTitle').text().trim();
-    if (!name) return { success: false, error: 'Amazon bloqueó la solicitud. Ingresá los datos manualmente.' };
-
+    if (!name) {
+      return { success: false, error: 'Amazon bloquea el acceso automático desde servidores. Ingresá los datos manualmente.' };
+    }
     const priceWhole = $('.a-price-whole').first().text().replace(/\D/g, '');
     const priceFraction = $('.a-price-fraction').first().text().replace(/\D/g, '');
     const price = priceWhole ? parseFloat(`${priceWhole}.${priceFraction || '00'}`) : null;
-    const imageUrl = $('#landingImage').attr('src') || $('#imgBlkFront').attr('src') || null;
-    const sku = $('[data-asin]').first().attr('data-asin') || null;
+    const imageUrl = $('#landingImage, #imgBlkFront').first().attr('src') ?? null;
+    const asin = $('[data-asin]').first().attr('data-asin') ?? null;
     const currency = url.includes('.com.br') ? 'BRL' : url.includes('.com.mx') ? 'MXN' : 'USD';
-
-    return { success: true, data: { name, price, currency, imageUrl, sku } };
+    const rating = parseFloat($('#acrPopover').attr('title') ?? '') || null;
+    const reviewCount = parseInt($('#acrCustomerReviewText').text().replace(/\D/g, '') ?? '') || null;
+    return {
+      success: true,
+      source: 'amazon_html',
+      data: { name, price, currency, imageUrl, sku: asin, brand: null, description: null, isAvailable: true, rating, reviewCount },
+    };
   } catch {
-    return { success: false, error: 'Amazon bloqueó la solicitud. Ingresá los datos manualmente.' };
+    return { success: false, error: 'Amazon bloquea el acceso automático desde servidores. Ingresá los datos manualmente.' };
   }
 }
 
-// ─── Genérico ──────────────────────────────────────────────────────────────────
+// ── Generic / JSON-LD ──────────────────────────────────────────────────────────
 
 function parsePrice(text: string): number | null {
   if (!text) return null;
-  // Remove currency symbols and non-numeric chars except . and ,
-  // Handle formats: 1.234,56 → 1234.56  |  1,234.56 → 1234.56  |  1234.56 → 1234.56
   const cleaned = text.replace(/[^\d.,]/g, '').trim();
   if (!cleaned) return null;
-
-  let normalized: string;
   const commaIdx = cleaned.lastIndexOf(',');
   const dotIdx = cleaned.lastIndexOf('.');
-
-  if (commaIdx > dotIdx) {
-    // Format: 1.234,56 (European/LATAM)
-    normalized = cleaned.replace(/\./g, '').replace(',', '.');
-  } else {
-    // Format: 1,234.56 (US) or plain 1234.56
-    normalized = cleaned.replace(/,/g, '');
-  }
-
+  const normalized = commaIdx > dotIdx
+    ? cleaned.replace(/\./g, '').replace(',', '.')
+    : cleaned.replace(/,/g, '');
   const num = parseFloat(normalized);
-  return !isNaN(num) && num > 0 ? num : null;
+  return !isNaN(num) && num > 0 && num < 1_000_000_000 ? num : null;
 }
 
 async function scrapeGeneric(url: string): Promise<ScrapeResult> {
   let html: string;
   try {
     const res = await axios.get(url, {
-      headers: HEADERS,
-      timeout: 7000,
+      headers: BROWSER_HEADERS,
+      timeout: 6000,
       maxRedirects: 5,
       responseType: 'text',
-      validateStatus: (s) => s < 400, // no lanzar en 3xx
+      validateStatus: (s) => s < 400,
     });
-    // Si no es HTML, no podemos parsear
-    const contentType = String(res.headers['content-type'] ?? '');
-    if (!contentType.includes('text/html') && !contentType.includes('application/xhtml')) {
-      return { success: false, error: 'El sitio no devolvió una página HTML parseable.' };
+    const ct = String(res.headers['content-type'] ?? '');
+    if (!ct.includes('text/html') && !ct.includes('application/xhtml')) {
+      return { success: false, error: 'El sitio no devolvió una página HTML.' };
     }
     html = typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
   } catch (e: unknown) {
     const status = (e as { response?: { status?: number } }).response?.status;
-    if (status === 403 || status === 401) {
-      return { success: false, error: 'El sitio bloqueó el acceso automático (protección anti-bot). Ingresá los datos manualmente.' };
-    }
-    if (status === 404) return { success: false, error: 'Página no encontrada. Verificá que la URL sea correcta.' };
+    if (status === 403 || status === 401) return { success: false, error: 'El sitio bloqueó el acceso. Ingresá los datos manualmente.' };
+    if (status === 404) return { success: false, error: 'Página no encontrada. Verificá la URL.' };
     return { success: false, error: 'No se pudo acceder al sitio. Ingresá los datos manualmente.' };
   }
 
   const $ = cheerio.load(html);
 
-  // ── 1. JSON-LD (estándar ecommerce: Shopify, WooCommerce, Tiendanube) ────────
-  let jsonLdResult: ScrapeResult | null = null;
-  $('script[type="application/ld+json"]').each((_, el) => {
-    if (jsonLdResult?.success) return;
+  // ── 1. JSON-LD (most reliable)
+  for (const el of $('script[type="application/ld+json"]').toArray()) {
     try {
       const raw = $(el).text().trim();
-      if (!raw) return;
+      if (!raw) continue;
       const json = JSON.parse(raw);
-      const nodes = Array.isArray(json) ? json : json['@graph'] ? json['@graph'] : [json];
-      const product = nodes.find((n: { '@type': string }) =>
-        n['@type'] === 'Product' || n['@type'] === 'IndividualProduct'
-      );
-      if (!product) return;
-
-      const name = product.name;
-      if (!name) return;
-
-      const imageUrl = Array.isArray(product.image)
-        ? product.image[0]
-        : typeof product.image === 'object'
-        ? product.image?.url ?? null
-        : product.image ?? null;
-
-      const offer = Array.isArray(product.offers) ? product.offers[0] : product.offers;
+      const nodes: Record<string, unknown>[] = Array.isArray(json) ? json : json['@graph'] ? json['@graph'] : [json];
+      const product = nodes.find((n) => n['@type'] === 'Product' || n['@type'] === 'IndividualProduct');
+      if (!product?.name) continue;
+      const imgRaw = product.image as string | string[] | { url?: string } | null;
+      const imageUrl: string | null = Array.isArray(imgRaw)
+        ? (imgRaw[0] as string)
+        : typeof imgRaw === 'object' && imgRaw !== null
+          ? (imgRaw as { url?: string }).url ?? null
+          : (imgRaw as string | null);
+      const offersRaw = product.offers as Record<string, unknown> | Record<string, unknown>[];
+      const offer = Array.isArray(offersRaw) ? offersRaw[0] : offersRaw;
       const price = offer?.price ? parseFloat(String(offer.price)) : null;
-      const currency = offer?.priceCurrency ?? 'ARS';
-      const sku = product.sku ?? product.mpn ?? null;
+      const aggRating = product.aggregateRating as { ratingValue?: number; reviewCount?: number } | null;
+      return {
+        success: true,
+        source: 'json_ld',
+        data: {
+          name: String(product.name).trim(),
+          price,
+          currency: String(offer?.priceCurrency ?? 'ARS'),
+          imageUrl: imageUrl ?? null,
+          sku: product.sku ? String(product.sku) : product.mpn ? String(product.mpn) : null,
+          brand: product.brand ? String((product.brand as { name?: string }).name ?? product.brand) : null,
+          description: product.description ? String(product.description).slice(0, 300) : null,
+          isAvailable: !offer?.availability || String(offer.availability).includes('InStock'),
+          rating: aggRating?.ratingValue ?? null,
+          reviewCount: aggRating?.reviewCount ?? null,
+        },
+      };
+    } catch { /* */ }
+  }
 
-      jsonLdResult = { success: true, data: { name, price, currency, imageUrl, sku } };
-    } catch { /* JSON inválido, continuar */ }
-  });
-  if (jsonLdResult) return jsonLdResult;
-
-  // ── 2. Next.js __NEXT_DATA__ (Next.js apps: muchas tiendas modernas) ─────────
-  const nextDataEl = $('script#__NEXT_DATA__').text().trim();
-  if (nextDataEl) {
+  // ── 2. __NEXT_DATA__ (Next.js stores)
+  const nextDataRaw = $('script#__NEXT_DATA__').text().trim();
+  if (nextDataRaw) {
     try {
-      const nextJson = JSON.parse(nextDataEl);
-      // Buscar datos de producto en la estructura de Next.js
-      const pageProps = nextJson?.props?.pageProps;
-      const product =
-        pageProps?.product ||
-        pageProps?.data?.product ||
-        pageProps?.initialData?.product ||
-        pageProps?.productData ||
-        pageProps?.pdp?.product ||
-        null;
-
-      if (product) {
-        const name = product.name || product.title || product.displayName;
+      const nd = JSON.parse(nextDataRaw);
+      const pp = nd?.props?.pageProps;
+      const p = pp?.product ?? pp?.data?.product ?? pp?.initialData?.product ?? pp?.productData ?? pp?.pdp?.product;
+      if (p) {
+        const name = String(p.name ?? p.title ?? p.displayName ?? '').trim();
         if (name) {
-          const price =
-            product.price?.current?.value ??
-            product.price?.value ??
-            product.currentPrice ??
-            product.priceRange?.minVariantPrice?.amount ??
-            null;
-
-          const currency =
-            product.price?.current?.currency ??
-            product.price?.currency ??
-            product.currency ??
-            product.priceRange?.minVariantPrice?.currencyCode ??
-            'ARS';
-
-          const imageUrl =
-            product.images?.[0]?.url ??
-            product.image?.url ??
-            product.primaryImage?.url ??
-            product.thumbnail ??
-            null;
-
-          const sku = product.sku ?? product.id ?? null;
-
+          const priceRaw = p.price?.current?.value ?? p.price?.value ?? p.currentPrice ?? p.priceRange?.minVariantPrice?.amount ?? null;
           return {
             success: true,
+            source: 'next_data',
             data: {
-              name: String(name).trim(),
-              price: price ? parseFloat(String(price)) : null,
-              currency: String(currency),
-              imageUrl: imageUrl ? String(imageUrl) : null,
-              sku: sku ? String(sku) : null,
+              name,
+              price: priceRaw ? parseFloat(String(priceRaw)) : null,
+              currency: String(p.price?.current?.currency ?? p.currency ?? p.priceRange?.minVariantPrice?.currencyCode ?? 'ARS'),
+              imageUrl: p.images?.[0]?.url ?? p.image?.url ?? p.primaryImage?.url ?? null,
+              sku: p.sku ? String(p.sku) : p.id ? String(p.id) : null,
+              brand: p.brand ?? null,
+              description: p.description ? String(p.description).slice(0, 300) : null,
+              isAvailable: p.available !== false,
+              rating: null,
+              reviewCount: null,
             },
           };
         }
       }
-    } catch { /* continuar */ }
+    } catch { /* */ }
   }
 
-  // ── 3. Open Graph + meta tags ──────────────────────────────────────────────
-  const ogTitle = $('meta[property="og:title"]').attr('content');
+  // ── 3. Open Graph + CSS selectors fallback
+  const ogTitle = $('meta[property="og:title"]').attr('content')?.trim();
   const ogImage = $('meta[property="og:image"]').attr('content') ?? null;
   const metaPrice = $('meta[property="product:price:amount"]').attr('content');
   const metaCurrency = $('meta[property="product:price:currency"]').attr('content') ?? 'ARS';
 
-  // ── 4. Precio desde selectores comunes ────────────────────────────────────
-  const priceSelectors = [
-    '[data-price]', '[data-product-price]',
-    '[itemprop="price"]',
-    '[class*="price-current"]', '[class*="current-price"]',
-    '[class*="precio-actual"]', '[class*="precio_actual"]',
-    '[class*="price__current"]', '[class*="price__amount"]',
-    '[class*="ProductPrice"]', '[class*="product-price"]',
-    '[class*="precio"]', '[class*="price"]',
-    '.price', '#price', '.Price',
-  ];
-
-  let scrapedPrice: number | null = metaPrice ? parsePrice(metaPrice) : null;
-  if (!scrapedPrice) {
-    for (const selector of priceSelectors) {
-      const el = $(selector).first();
+  let price: number | null = metaPrice ? parsePrice(metaPrice) : null;
+  if (!price) {
+    const PRICE_SELECTORS = [
+      '[data-price]', '[data-product-price]', '[itemprop="price"]',
+      '[class*="price-current"]', '[class*="current-price"]', '[class*="precio-actual"]',
+      '[class*="price__current"]', '[class*="price__amount"]', '[class*="ProductPrice"]',
+      '[class*="product-price"]', '[class*="precio"]', '.price', '#price',
+    ];
+    for (const sel of PRICE_SELECTORS) {
+      const el = $(sel).first();
       if (!el.length) continue;
-      const text =
-        el.attr('data-price') ??
-        el.attr('content') ??
-        el.attr('data-product-price') ??
-        el.attr('data-price-amount') ??
-        el.text();
+      const text = el.attr('data-price') ?? el.attr('content') ?? el.attr('data-product-price') ?? el.text();
       const p = parsePrice(text || '');
-      if (p && p > 0) { scrapedPrice = p; break; }
+      if (p) { price = p; break; }
     }
   }
 
-  // ── 5. Imagen ──────────────────────────────────────────────────────────────
-  const imgSelectors = [
-    '[class*="product"] img[src*="http"]',
-    '[class*="gallery"] img[src*="http"]',
-    '#product-image', '.product-image img',
-    'img[itemprop="image"]',
-  ];
-  let scrapedImg: string | null = ogImage;
-  if (!scrapedImg) {
-    for (const selector of imgSelectors) {
-      const src = $(selector).first().attr('src') || $(selector).first().attr('data-src');
-      if (src && src.startsWith('http')) { scrapedImg = src; break; }
-    }
+  const name = ogTitle
+    ?? $('h1[class*="product"]').first().text().trim()
+    ?? $('h1[class*="title"]').first().text().trim()
+    ?? $('h1').first().text().trim()
+    ?? $('title').text().trim().split(/[|–—]/)[0].trim();
+
+  if (!name) {
+    return { success: false, error: 'No se pudo leer el producto. El sitio puede requerir JavaScript o estar protegido.' };
   }
-
-  // ── 6. Nombre ──────────────────────────────────────────────────────────────
-  const name =
-    ogTitle ||
-    $('h1[class*="product"]').first().text().trim() ||
-    $('h1[class*="title"]').first().text().trim() ||
-    $('h1').first().text().trim() ||
-    $('title').text().trim().split('|')[0].split('–')[0].trim();
-
-  if (!name) return { success: false, error: 'No se pudo leer el producto automáticamente. El sitio puede estar protegido o requerir JavaScript.' };
 
   return {
     success: true,
-    data: { name: name.trim(), price: scrapedPrice, currency: metaCurrency, imageUrl: scrapedImg, sku: null },
+    source: 'og',
+    data: { name: name.trim(), price, currency: metaCurrency, imageUrl: ogImage, sku: null, brand: null, description: null, isAvailable: true, rating: null, reviewCount: null },
   };
 }
 
-// ─── Función principal ─────────────────────────────────────────────────────────
+// ── Public entry point ────────────────────────────────────────────────────────
 
 export async function scrapeProduct(url: string): Promise<ScrapeResult> {
-  const security = validateUrl(url);
-  if (!security.valid) return { success: false, error: security.error };
+  const sec = validateUrl(url);
+  if (!sec.valid) return { success: false, error: sec.error };
 
   const lower = url.toLowerCase();
-  if (lower.includes('mercadolibre') || lower.includes('articulo.mercado')) {
+
+  if (lower.includes('mercadolibre') || lower.includes('articulo.mercado') || lower.includes('listado.mercado')) {
     return scrapeMercadoLibre(url);
   }
   if (lower.includes('amazon')) {
     return scrapeAmazon(url);
   }
   return scrapeGeneric(url);
+}
+
+/**
+ * Search MercadoLibre by GTIN / EAN / barcode.
+ * Returns the best-matching product found across all ML categories.
+ */
+export async function searchByGTIN(gtin: string, country = 'AR'): Promise<ScrapeResult> {
+  const siteMap: Record<string, string> = { AR: 'MLA', BR: 'MLB', MX: 'MLM', CL: 'MLC', CO: 'MLCO', UY: 'MLU', PE: 'MLPE' };
+  const site = siteMap[country.toUpperCase()] ?? 'MLA';
+  try {
+    const { data } = await ML_API.get(`/sites/${site}/search`, { params: { q: gtin, limit: 1 } });
+    const first = data?.results?.[0];
+    if (!first?.title) return { success: false, error: `No se encontró ningún producto con GTIN ${gtin} en MercadoLibre.` };
+    return {
+      success: true,
+      source: 'ml_search_api',
+      data: {
+        name: first.title,
+        price: first.price ?? null,
+        currency: first.currency_id ?? 'ARS',
+        imageUrl: first.thumbnail?.replace('http://', 'https://') ?? null,
+        sku: first.id ?? null,
+        brand: null,
+        description: null,
+        isAvailable: true,
+        rating: null,
+        reviewCount: null,
+      },
+    };
+  } catch {
+    return { success: false, error: 'Error al buscar el GTIN en MercadoLibre.' };
+  }
 }

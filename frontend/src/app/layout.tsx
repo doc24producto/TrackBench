@@ -5,6 +5,7 @@ import { Providers } from './providers';
 export const metadata: Metadata = {
   title: 'CompetitorTrack — Monitor Competitor Prices in Real-Time',
   description: 'Track Amazon, MercadoLibre, and Shopify competitor prices with real-time alerts and analytics.',
+  icons: { icon: '/favicon.svg' },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

@@ -3,43 +3,82 @@ import { supabase } from '@/lib/supabase';
 import { getUser } from '@/lib/auth';
 import { scrapeProduct } from '@/lib/scraper';
 
+const SCRAPE_TIMEOUT_MS = 6000;
+
+async function scrapeWithTimeout(url: string) {
+  return Promise.race([
+    scrapeProduct(url),
+    new Promise<{ success: false; error: string }>((resolve) =>
+      setTimeout(() => resolve({ success: false, error: 'timeout' }), SCRAPE_TIMEOUT_MS)
+    ),
+  ]);
+}
+
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
-  const user = getUser(req);
-  if (!user) return NextResponse.json({ error: 'No autorizado' }, { status: 401 });
+  try {
+    const user = getUser(req);
+    if (!user) return NextResponse.json({ error: 'No autorizado' }, { status: 401 });
 
-  const { data: product } = await supabase.from('products')
-    .select('*, competitors(id, url)').eq('id', params.id).eq('userId', user.id).single();
-  if (!product) return NextResponse.json({ error: 'No encontrado' }, { status: 404 });
+    const { data: product } = await supabase
+      .from('products')
+      .select('id, url, imageUrl, competitors(id, url)')
+      .eq('id', params.id)
+      .eq('userId', user.id)
+      .single();
 
-  const scraped = await scrapeProduct(product.url);
-  if (scraped.success && scraped.data) {
-    await supabase.from('products').update({
-      currentPrice: scraped.data.price,
-      imageUrl: scraped.data.imageUrl || product.imageUrl,
-      lastScrapedAt: new Date().toISOString(),
-    }).eq('id', product.id);
+    if (!product) return NextResponse.json({ error: 'Producto no encontrado' }, { status: 404 });
 
-    if (scraped.data.price) {
-      await supabase.from('price_history').insert({
-        productId: product.id, price: scraped.data.price, currency: scraped.data.currency,
-      });
-    }
-  }
-
-  for (const comp of product.competitors || []) {
-    const cs = await scrapeProduct(comp.url);
-    if (cs.success && cs.data) {
-      await supabase.from('competitors').update({
-        currentPrice: cs.data.price,
+    // ── Refresh own product price ──────────────────────────────────────────────
+    const ownScrape = await scrapeWithTimeout(product.url);
+    if (ownScrape.success && 'data' in ownScrape && ownScrape.data) {
+      await supabase.from('products').update({
+        currentPrice: ownScrape.data.price,
+        imageUrl: ownScrape.data.imageUrl || product.imageUrl,
+        isAvailable: ownScrape.data.isAvailable,
         lastScrapedAt: new Date().toISOString(),
-      }).eq('id', comp.id);
-      if (cs.data.price) {
+      }).eq('id', product.id);
+
+      if (ownScrape.data.price) {
         await supabase.from('price_history').insert({
-          competitorId: comp.id, price: cs.data.price, currency: cs.data.currency,
+          productId: product.id,
+          price: ownScrape.data.price,
+          currency: ownScrape.data.currency,
         });
       }
     }
-  }
 
-  return NextResponse.json({ message: 'Actualizado' });
+    // ── Refresh competitors sequentially (respect Vercel timeout budget) ───────
+    const competitors = (product.competitors as { id: string; url: string }[]) ?? [];
+    for (const comp of competitors) {
+      try {
+        const cs = await scrapeWithTimeout(comp.url);
+        if (cs.success && 'data' in cs && cs.data) {
+          const updates: Record<string, unknown> = {
+            currentPrice: cs.data.price,
+            isAvailable: cs.data.isAvailable,
+            lastScrapedAt: new Date().toISOString(),
+          };
+          if (cs.data.imageUrl) updates.imageUrl = cs.data.imageUrl;
+
+          await supabase.from('competitors').update(updates).eq('id', comp.id);
+
+          if (cs.data.price) {
+            await supabase.from('price_history').insert({
+              competitorId: comp.id,
+              price: cs.data.price,
+              currency: cs.data.currency,
+            });
+          }
+        }
+      } catch (e) {
+        console.warn(`[refresh] Failed to scrape competitor ${comp.id}:`, e);
+        // Continue with remaining competitors
+      }
+    }
+
+    return NextResponse.json({ ok: true, message: 'Precios actualizados' });
+  } catch (e) {
+    console.error('[POST /refresh] Unhandled:', e);
+    return NextResponse.json({ error: 'Error al actualizar', detail: String(e) }, { status: 500 });
+  }
 }

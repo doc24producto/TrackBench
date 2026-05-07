@@ -1,3 +1,9 @@
 {
-  "framework": "nextjs"
+  "framework": "nextjs",
+  "functions": {
+    "src/app/api/products/route.ts": { "maxDuration": 15 },
+    "src/app/api/products/[id]/competitors/route.ts": { "maxDuration": 15 },
+    "src/app/api/products/[id]/refresh/route.ts": { "maxDuration": 30 },
+    "src/app/api/search/route.ts": { "maxDuration": 10 }
+  }
 }
