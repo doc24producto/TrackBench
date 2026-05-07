@@ -81,7 +81,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const marketplace = detectMarketplace(url);
     const country = detectCountry(url);
     const brandName = getBrandName(url);
 
