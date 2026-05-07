@@ -269,32 +269,6 @@ const BROWSER_HEADERS = {
   'Cache-Control': 'no-cache',
 };
 
-async function scrapeAmazon(url: string): Promise<ScrapeResult> {
-  try {
-    const res = await axios.get(url, { headers: BROWSER_HEADERS, timeout: 5000 });
-    const $ = cheerio.load(res.data);
-    const name = $('#productTitle').text().trim();
-    if (!name) {
-      return { success: false, error: 'Amazon bloquea el acceso automático desde servidores. Ingresá los datos manualmente.' };
-    }
-    const priceWhole = $('.a-price-whole').first().text().replace(/\D/g, '');
-    const priceFraction = $('.a-price-fraction').first().text().replace(/\D/g, '');
-    const price = priceWhole ? parseFloat(`${priceWhole}.${priceFraction || '00'}`) : null;
-    const imageUrl = $('#landingImage, #imgBlkFront').first().attr('src') ?? null;
-    const asin = $('[data-asin]').first().attr('data-asin') ?? null;
-    const currency = url.includes('.com.br') ? 'BRL' : url.includes('.com.mx') ? 'MXN' : 'USD';
-    const rating = parseFloat($('#acrPopover').attr('title') ?? '') || null;
-    const reviewCount = parseInt($('#acrCustomerReviewText').text().replace(/\D/g, '') ?? '') || null;
-    return {
-      success: true,
-      source: 'amazon_html',
-      data: { name, price, currency, imageUrl, sku: asin, brand: null, description: null, isAvailable: true, rating, reviewCount },
-    };
-  } catch {
-    return { success: false, error: 'Amazon bloquea el acceso automático desde servidores. Ingresá los datos manualmente.' };
-  }
-}
-
 // ── Generic / JSON-LD ──────────────────────────────────────────────────────────
 
 function parsePrice(text: string): number | null {
@@ -446,17 +420,35 @@ async function scrapeGeneric(url: string): Promise<ScrapeResult> {
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
+/**
+ * Domains that always block server-side requests.
+ * Return immediately with a clear message — no HTTP call = no timeout risk.
+ */
+const ALWAYS_BLOCKED: { test: (lower: string) => boolean; name: string }[] = [
+  { test: (l) => l.includes('amazon.'), name: 'Amazon' },
+  { test: (l) => l.includes('falabella.'), name: 'Falabella' },
+  { test: (l) => l.includes('coto.com.ar'), name: 'Coto' },
+  { test: (l) => l.includes('carrefour.com.ar'), name: 'Carrefour' },
+];
+
 export async function scrapeProduct(url: string): Promise<ScrapeResult> {
   const sec = validateUrl(url);
   if (!sec.valid) return { success: false, error: sec.error };
 
   const lower = url.toLowerCase();
 
+  // Fast-fail for sites that always block server-side requests
+  for (const blocked of ALWAYS_BLOCKED) {
+    if (blocked.test(lower)) {
+      return {
+        success: false,
+        error: `${blocked.name} bloquea el acceso automático desde servidores. Ingresá el nombre y precio manualmente — igual guardamos la URL para monitorear cambios.`,
+      };
+    }
+  }
+
   if (lower.includes('mercadolibre') || lower.includes('articulo.mercado') || lower.includes('listado.mercado')) {
     return scrapeMercadoLibre(url);
-  }
-  if (lower.includes('amazon')) {
-    return scrapeAmazon(url);
   }
   return scrapeGeneric(url);
 }
